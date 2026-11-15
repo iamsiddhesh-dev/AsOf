@@ -29,6 +29,9 @@ Set `FAKE_NOW` to freeze the clock for tests and demos. Every "now" in the app f
 ```text
 GET  /health
 GET  /api/ledger/stats
+GET  /api/ledger/claims
+GET  /api/ledger/claims/:id
+GET  /api/ledger/subjects
 
 POST /api/conversations
 GET  /api/conversations
@@ -47,6 +50,19 @@ GET  /api/demo/history
 ```
 
 `GET /:id/turns?date=` is conversation-scoped exact-date recall.
+
+`GET /:id/turns` returns every turn with its `sources`: the `sN` label the answer cites, the URL, domain, fetched time, and the quoted snippet. Citations are stored in `turn_sources` when the answer is written, so reopening a conversation still shows the evidence that was used.
+
+`GET /api/ledger/claims` reads claims directly instead of through an answer:
+
+```text
+?status=active|superseded|retracted|unknown|all   default active
+?subject=hubspot                                   substring, case-insensitive
+?q=starter                                         subject, attribute, or value
+?limit=1..200&offset=0
+```
+
+`GET /api/ledger/claims/:id` returns the claim plus its supersession chain, oldest first. The chain is walked through `supersedes_claim_id`, not by matching subject text, so two separate price histories are not stitched into one. `GET /api/ledger/subjects` is the index: each subject with its active and superseded counts.
 
 `POST /api/memory/recall` is global recall. Memory is not scoped to one conversation, so "what did I ask in November" reaches every conversation the user has ever had. The reply is read from the database, never generated:
 
@@ -231,13 +247,15 @@ claims    4 stored, 0 superseded, 0 dropped
 - Verbatim-checked claim extraction after grounded answers, with `sources` rows and supersession history.
 - Claims-mode recheck: global claim selection, fresh search, verbatim-checked verdicts, and supersession of changed values.
 - A streaming endpoint that reports the decision, each step, sources, and real model tokens as they arrive, then persists both turns on completion.
+- Durable per-turn citations (`turn_sources`), so a reopened answer keeps its footnotes.
+- A read-only ledger API: claim list with evidence, supersession history, and a subject index.
 - Deterministic eval coverage of the answer path through injected fixtures.
 
 ## What does not work yet
 
 - News rechecks (`has any of them shipped something?`) still return `not_built`. Only dated claims and announcements would make that lane honest.
 - No entity-set population, so "any of them" usually asks for the referent first.
-- No frontend yet. The API is the only client, and citations are returned in the response body rather than stored per turn, so a reopenable source inspector needs one more table.
+- No frontend yet. The API is the only client.
 - Claim extraction is only as good as the extraction prompt: claims the model omits are not recovered, and `dropped` counts rejected claims rather than explaining each one.
 - A recheck compares against a fresh open-web search, not a dated archive. `unchanged` means "the current sources still say this", not "this was true continuously since yesterday".
 

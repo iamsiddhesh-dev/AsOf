@@ -56,12 +56,19 @@ Four tables carry the argument.
 
 ```text
 conversations ──< turns ──< claims >── sources
+                    │                    ▲
+                    └── turn_sources ────┘
                     │
                     └── parent_turn_id (question → answer)
 ```
 
 `turns` is the conversation log, with the receipt attached: `intent`, resolved
 date range, model, latency, tokens, `claims_status`.
+
+`turn_sources` records which sources a turn used and under which `sN` label. A
+citation is otherwise just text in a response body, and a response body is gone
+the moment the browser closes; the join table is what lets a reopened
+conversation render the same footnotes.
 
 `sources` is keyed by **what was fetched**, not by the answer that cited it. The
 id is a hash of provider + canonical URL + snippet, so two answers that quote
@@ -406,10 +413,10 @@ no sparkle icons, no chat bubbles, no generic hero. Typography, rules, and
 whitespace do the work. Density is moderate: the reader is comfortable at length
 because this is meant to be used daily, not screenshot once.
 
-Not built yet. It needs three read APIs first: `GET /api/ledger/claims`,
-claim history by subject, and durable per-turn citations (a `turn_sources`
-table), so reopening a conversation can still show its evidence instead of
-relying on the response body that has already been discarded.
+Not built yet. The read APIs it needs now exist: `GET /api/ledger/claims`,
+`GET /api/ledger/claims/:id` for the supersession chain, `GET
+/api/ledger/subjects`, and per-turn citations from `turn_sources` included in
+`GET /:id/turns`. The next slice is the frontend itself.
 
 ---
 

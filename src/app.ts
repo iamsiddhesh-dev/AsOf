@@ -6,6 +6,7 @@ import type { ChatClient, SearchClient } from "./providers/types.js";
 import { answerRoutes } from "./routes/answer.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { demoRoutes } from "./routes/demo.js";
+import { ledgerRoutes } from "./routes/ledger.js";
 import { memoryRoutes } from "./routes/memory.js";
 
 export type AppOptions = {
@@ -62,6 +63,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
   });
 
   app.route("/api/conversations", conversationRoutes(db, options));
+  app.route("/api/ledger", ledgerRoutes(db));
   app.route("/api/conversations", answerRoutes(db, {
     clock,
     search:
