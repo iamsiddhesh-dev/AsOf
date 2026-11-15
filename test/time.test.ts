@@ -96,6 +96,20 @@ describe("date resolution", () => {
     assert.equal(resolve("since then"), null);
   });
 
+  it("resolves a rolling window that starts at a named day", () => {
+    assert.deepEqual(resolve("since yesterday"), {
+      start: "2026-11-13T18:30:00.000Z",
+      end: "2026-11-15T10:00:00.000Z",
+      label: "since 14 November 2026",
+    });
+
+    assert.deepEqual(resolve("has anything changed since 3 november?"), {
+      start: "2026-11-02T18:30:00.000Z",
+      end: "2026-11-15T10:00:00.000Z",
+      label: "since 3 November 2026",
+    });
+  });
+
   it("returns null for invalid or missing dates", () => {
     assert.equal(resolve("31 february"), null);
     assert.equal(resolve("no date here"), null);

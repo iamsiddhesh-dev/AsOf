@@ -39,6 +39,32 @@ const WEEKDAY_LOOKUP = new Map<string, number>(
   WEEKDAYS.map((day, index) => [day, index]),
 );
 
+const WEEKDAY_PATTERN = WEEKDAYS.join("|");
+
+const TEMPORAL_CUE_PATTERN = new RegExp(
+  "\\b(?:" +
+    [
+      "today",
+      "tonight",
+      "yesterday",
+      "tomorrow",
+      "this (?:week|month|year)",
+      `last (?:week|month|year|night|${WEEKDAY_PATTERN})`,
+      "(?:last|past|previous) \\d{1,3} days?",
+      "since (?:then|the last answer|my last answer)",
+      MONTH_PATTERN,
+      WEEKDAY_PATTERN,
+      "\\d{4}-\\d{2}-\\d{2}",
+    ].join("|") +
+    ")\\b",
+  "i",
+);
+
+/** True when the text mentions a date or a relative day at all. */
+export function hasTemporalReference(input: string): boolean {
+  return TEMPORAL_CUE_PATTERN.test(input);
+}
+
 export type DateDirection = "past" | "future" | "nearest";
 
 export type ResolvedRange = {
@@ -299,6 +325,21 @@ export function resolveDateRange(
       end: options.now.toISOString(),
       label: "since the last answer",
     };
+  }
+
+  const sincePrefix = text.match(/\bsince\s+(.+)$/);
+  if (sincePrefix) {
+    const inner = (sincePrefix[1] ?? "").trim();
+    if (inner.length > 0 && !/^since\b/.test(inner)) {
+      const anchor = resolveDateRange(inner, options);
+      if (anchor !== null) {
+        return {
+          start: anchor.start,
+          end: options.now.toISOString(),
+          label: `since ${anchor.label}`,
+        };
+      }
+    }
   }
 
   const iso = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);

@@ -199,6 +199,51 @@ describe("conversation and turn api", () => {
     );
   });
 
+  it("exposes the routing decision and stamps intent on user turns", async () => {
+    const conversation = await createConversation();
+
+    const decisionResponse = await app().request(
+      `http://localhost/api/conversations/${conversation.id}/route`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "what did i ask yesterday?" }),
+      },
+    );
+    assert.equal(decisionResponse.status, 200);
+    const decision = (await decisionResponse.json()) as {
+      intent: string;
+      timeRange: { label: string } | null;
+    };
+    assert.equal(decision.intent, "recall");
+    assert.equal(decision.timeRange?.label, "14 November 2026");
+
+    const turnResponse = await app().request(
+      `http://localhost/api/conversations/${conversation.id}/turns`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          role: "user",
+          content: "what did i ask on 3 november?",
+        }),
+      },
+    );
+    assert.equal(turnResponse.status, 201);
+    const turn = (await turnResponse.json()) as Turn;
+    assert.equal(turn.intent, "recall");
+
+    const missingText = await app().request(
+      `http://localhost/api/conversations/${conversation.id}/route`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    assert.equal(missingText.status, 400);
+  });
+
   it("rejects an invalid date and an invalid role", async () => {
     const conversation = await createConversation();
 
