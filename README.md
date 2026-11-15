@@ -19,9 +19,18 @@ npm run dev
 The service starts on `http://localhost:8787` by default.
 
 ```text
-GET /health
-GET /api/ledger/stats
+GET  /health
+GET  /api/ledger/stats
+
+POST /api/conversations
+GET  /api/conversations
+GET  /api/conversations/:id
+POST /api/conversations/:id/turns
+GET  /api/conversations/:id/turns
+GET  /api/conversations/:id/turns?date=3%20november
 ```
+
+The last route is exact-date recall. It resolves the date in the conversation's timezone and returns the turns created inside that local day.
 
 ## Branches
 
