@@ -1,11 +1,19 @@
 import { Hono } from "hono";
+import { config } from "./config.js";
 import type { Db } from "./db/index.js";
+import { createChatClient, createSearchClient } from "./providers/index.js";
+import type { ChatClient, SearchClient } from "./providers/types.js";
+import { answerRoutes } from "./routes/answer.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { demoRoutes } from "./routes/demo.js";
 import { memoryRoutes } from "./routes/memory.js";
 
 export type AppOptions = {
   clock?: () => Date;
+  /** Injected by the eval and tests. `null` means "not configured". */
+  search?: SearchClient | null;
+  chat?: ChatClient | null;
+  model?: string;
 };
 
 const LEDGER_TABLES = [
@@ -52,6 +60,15 @@ export function createApp(db: Db, options: AppOptions = {}) {
   });
 
   app.route("/api/conversations", conversationRoutes(db, options));
+  app.route("/api/conversations", answerRoutes(db, {
+    clock,
+    search:
+      options.search !== undefined
+        ? options.search
+        : createSearchClient(db, clock),
+    chat: options.chat !== undefined ? options.chat : createChatClient(),
+    model: options.model ?? config.model.main.model,
+  }));
   app.route("/api/memory", memoryRoutes(db, options));
   app.route("/api/demo", demoRoutes(db, options));
 
