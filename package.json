@@ -16,6 +16,7 @@
     "eval": "tsx eval/run.ts",
     "probe:models": "tsx scripts/probe-models.ts",
     "smoke:answer": "tsx scripts/smoke-answer.ts",
+    "smoke:recheck": "tsx scripts/smoke-recheck.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

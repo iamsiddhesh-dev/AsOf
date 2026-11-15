@@ -1,6 +1,12 @@
 import type { Db } from "../db/index.js";
+import type { ConversationState } from "../conversations/state.js";
 import { answerRecall, formatLocalDate } from "../memory/recall.js";
 import type { ChatClient, SearchClient, SearchResult } from "../providers/types.js";
+import {
+  recheckClaims,
+  type ClaimUpdate,
+  type RecheckVerdict,
+} from "../recheck/compare.js";
 import type {
   BlockedBy,
   RouteAction,
@@ -37,12 +43,19 @@ export type AnswerResult = {
   tokenOut: number | null;
   blockedBy: BlockedBy;
   demo: boolean;
+  /** Changes found by a recheck, stored only after the answer turn exists. */
+  claimUpdates: ClaimUpdate[];
+  /** Present when a claims-mode recheck ran, which replaces extraction. */
+  recheck: { status: "done" | "blocked"; verdicts: RecheckVerdict[] } | null;
 };
 
 export type AnswerDeps = {
   search: SearchClient;
   chat: ChatClient;
   model: string;
+  /** Structured calls (extraction, comparison) can use the fast model. */
+  extractChat?: ChatClient | null;
+  extractModel?: string;
 };
 
 export type AnswerInput = {
@@ -50,6 +63,8 @@ export type AnswerInput = {
   timezone: string;
   now: Date;
   decision: RouteDecision;
+  /** Active entities help a recheck choose which stored claims to compare. */
+  state?: ConversationState | null;
   /** Hand-supplied keyword for date-range recall; extraction is a model job. */
   keyword?: string | null;
 };
@@ -81,11 +96,8 @@ function clarifyMessage(blockedBy: BlockedBy): string {
   }
 }
 
-function recheckMessage(step: RouteStep): string {
-  return step.mode === "news"
-    ? "I can plan that news check, but dated-claim extraction is not built yet, so I have nothing to compare. I won't claim nothing changed."
-    : "I can plan that recheck, but claims extraction is not built yet, so there is nothing to diff. I won't guess whether it changed.";
-}
+const NEWS_RECHECK =
+  "I can plan that news recheck, but extracting dated launches and announcements is not built yet, so I have nothing to compare. I won't claim nothing changed.";
 
 function hostOf(url: string): string {
   try {
@@ -234,12 +246,16 @@ export async function answerQuestion(
       tokenOut: null,
       blockedBy: decision.blockedBy,
       demo: false,
+      claimUpdates: [],
+      recheck: null,
     };
   }
 
   const parts: string[] = [];
   const steps: AnswerStep[] = [];
   const citations: Citation[] = [];
+  const claimUpdates: ClaimUpdate[] = [];
+  let recheck: AnswerResult["recheck"] = null;
   let model: string | null = null;
   let demo = false;
   let sawSearch = false;
@@ -267,11 +283,52 @@ export async function answerQuestion(
     }
 
     if (step.action === "recheck") {
-      parts.push(recheckMessage(step));
+      if (step.mode === "news") {
+        parts.push(NEWS_RECHECK);
+        steps.push({
+          action: "recheck",
+          status: "not_built",
+          detail: "mode news: dated-news extraction is not built",
+        });
+        continue;
+      }
+
+      const compared = await recheckClaims(
+        db,
+        {
+          search: deps.search,
+          chat: deps.extractChat ?? deps.chat,
+          model: deps.extractModel ?? deps.model,
+        },
+        {
+          text: input.text,
+          now: input.now,
+          activeEntities: (input.state?.activeEntities ?? []).map(
+            (entity) => entity.name,
+          ),
+          firstIndex: citations.length,
+        },
+      );
+
+      parts.push(compared.text);
+      citations.push(...compared.citations);
+      claimUpdates.push(...compared.claimUpdates);
+      recheck = { status: compared.status, verdicts: compared.verdicts };
+      sawSearch = true;
+      allGrounded = allGrounded && compared.grounded;
+      if (compared.model !== null) {
+        model = compared.model;
+      }
+      if (compared.tokenIn !== null) {
+        tokenIn = (tokenIn ?? 0) + compared.tokenIn;
+      }
+      if (compared.tokenOut !== null) {
+        tokenOut = (tokenOut ?? 0) + compared.tokenOut;
+      }
       steps.push({
         action: "recheck",
-        status: "not_built",
-        detail: `mode ${step.mode ?? "claims"}: claim extraction is not built`,
+        status: compared.status,
+        detail: compared.detail,
       });
       continue;
     }
@@ -308,5 +365,7 @@ export async function answerQuestion(
     tokenOut,
     blockedBy: decision.blockedBy,
     demo,
+    claimUpdates,
+    recheck,
   };
 }

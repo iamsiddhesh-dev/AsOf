@@ -1,14 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db/index.js";
 import type { ChatClient } from "../providers/types.js";
+import {
+  claimContentHash,
+  storeClaim,
+  upsertSources,
+  type ClaimSource,
+} from "./store.js";
 
-export type ClaimSource = {
-  id: string;
-  title: string;
-  url: string;
-  publishedAt: string | null;
-  snippet: string;
-};
+export type { ClaimSource } from "./store.js";
 
 export type ExtractedClaim = {
   subject: string;
@@ -140,40 +139,8 @@ function parseClaims(raw: string): ExtractedClaim[] {
   return claims;
 }
 
-function canonicalUrl(raw: string): string {
-  try {
-    const url = new URL(raw);
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return raw;
-  }
-}
-
-function sourceId(provider: string, canonical: string, snippet: string): string {
-  const hash = createHash("sha256")
-    .update(`${provider}\n${canonical}\n${snippet}`)
-    .digest("hex")
-    .slice(0, 24);
-  return `src-${hash}`;
-}
-
 function claimType(claim: ExtractedClaim): string {
   return claim.currency === null ? "fact" : "price";
-}
-
-function claimHash(claim: ExtractedClaim): string {
-  return createHash("sha256")
-    .update(
-      [
-        normalise(claim.subject),
-        normalise(claim.attribute),
-        normalise(claim.value),
-        claim.sourceId ?? "",
-        normalise(claim.quote),
-      ].join("\n"),
-    )
-    .digest("hex");
 }
 
 /**
@@ -204,110 +171,50 @@ function persist(
   let inserted = 0;
   let superseded = 0;
 
-  const insertSource = db.prepare(
-    `INSERT INTO sources
-      (id, url, canonical_url, domain, title, published_at, fetched_at,
-       snippet, provider)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET
-       fetched_at = excluded.fetched_at,
-       title = excluded.title,
-       snippet = excluded.snippet`,
-  );
-
-  const findPrior = db.prepare(
-    `SELECT id FROM claims
-     WHERE lower(subject_text) = lower(?)
-       AND lower(attribute) = lower(?)
-       AND period IS ?
-       AND currency IS ?
-       AND status = 'active'
-     ORDER BY observed_at DESC, created_at DESC
-     LIMIT 1`,
-  );
-
   const findDuplicate = db.prepare(
     "SELECT 1 AS hit FROM claims WHERE turn_id = ? AND content_hash = ?",
   );
 
-  const supersede = db.prepare(
-    "UPDATE claims SET status = 'superseded' WHERE id = ?",
-  );
-
-  const insertClaim = db.prepare(
-    `INSERT INTO claims
-      (id, turn_id, conversation_id, subject_text, attribute, claim_type,
-       value_json, value_text, unit, currency, period, confidence, source_kind,
-       source_id, quote, observed_at, supersedes_claim_id, status,
-       content_hash, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'web', ?, ?, ?, ?, 'active', ?, ?)`,
-  );
-
   const transaction = db.transaction(() => {
-    const stored = new Map<string, string>();
-
-    for (const source of input.sources) {
-      const canonical = canonicalUrl(source.url);
-      let domain = canonical;
-      try {
-        domain = new URL(canonical).hostname.replace(/^www\./, "");
-      } catch {
-        // keep the raw string; the column is display-only
-      }
-
-      const id = sourceId(input.provider, canonical, source.snippet);
-      insertSource.run(
-        id,
-        source.url,
-        canonical,
-        domain,
-        source.title,
-        source.publishedAt,
-        now,
-        source.snippet,
-        input.provider,
-      );
-      stored.set(source.id, id);
-    }
+    const stored = upsertSources(db, input.sources, input.provider, now);
 
     for (const claim of claims) {
-      const hash = claimHash(claim);
+      const sourceRowId =
+        claim.sourceId === null ? null : stored.get(claim.sourceId) ?? null;
+
+      const hash = claimContentHash({
+        subject: claim.subject,
+        attribute: claim.attribute,
+        value: claim.value,
+        sourceId: sourceRowId,
+        quote: claim.quote,
+      });
+
       if (findDuplicate.get(input.turnId, hash) !== undefined) {
         continue;
       }
 
-      const prior = findPrior.get(
-        claim.subject,
-        claim.attribute,
-        claim.period,
-        claim.currency,
-      ) as { id: string } | undefined;
+      const result = storeClaim(db, {
+        turnId: input.turnId,
+        conversationId: input.conversationId,
+        subject: claim.subject,
+        attribute: claim.attribute,
+        claimType: claimType(claim),
+        value: claim.value,
+        unit: claim.unit,
+        currency: claim.currency,
+        period: claim.period,
+        confidence: 0.8,
+        sourceRowId,
+        quote: claim.quote,
+        observedAt: now,
+        contentHash: hash,
+        createdAt: now,
+      });
 
-      if (prior !== undefined) {
-        supersede.run(prior.id);
+      if (result.supersededId !== null) {
         superseded += 1;
       }
-
-      insertClaim.run(
-        randomUUID(),
-        input.turnId,
-        input.conversationId,
-        claim.subject,
-        claim.attribute,
-        claimType(claim),
-        JSON.stringify({ text: claim.value }),
-        claim.value,
-        claim.unit,
-        claim.currency,
-        claim.period,
-        0.8,
-        claim.sourceId === null ? null : stored.get(claim.sourceId) ?? null,
-        claim.quote,
-        now,
-        prior?.id ?? null,
-        hash,
-        now,
-      );
       inserted += 1;
     }
   });

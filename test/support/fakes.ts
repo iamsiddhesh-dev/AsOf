@@ -44,6 +44,38 @@ export function isExtractionRequest(request: ChatRequest): boolean {
   );
 }
 
+/** True when the request asks the model to compare stored claims to evidence. */
+export function isRecheckRequest(request: ChatRequest): boolean {
+  return request.messages.some(
+    (message) =>
+      message.role === "system" &&
+      message.content.includes("You compare stored claims"),
+  );
+}
+
+/**
+ * The fixture world has one stored claim worth 20 USD and a source that says
+ * the same thing, so a recheck of it is unchanged. Tests that need a change
+ * pass their own responder.
+ */
+export function fixtureRecheckReply(request: ChatRequest): string {
+  const user = request.messages.find((message) => message.role === "user");
+  const claimId = /claimId: ([^\s]+)/.exec(user?.content ?? "")?.[1] ?? "";
+
+  return JSON.stringify({
+    verdicts: [
+      {
+        claimId,
+        status: "unchanged",
+        value: null,
+        quote: "HubSpot Starter is 20 USD per seat per month.",
+        sourceId: "s1",
+        reason: "the evidence states the same value",
+      },
+    ],
+  });
+}
+
 export type ChatResponder = (request: ChatRequest) => string;
 
 export class FakeSearch implements SearchClient {
@@ -86,9 +118,11 @@ export class FakeChat implements ChatClient {
 
     const content =
       this.reply === null
-        ? isExtractionRequest(request)
-          ? EMPTY_CLAIMS_REPLY
-          : DEFAULT_REPLY
+        ? isRecheckRequest(request)
+          ? fixtureRecheckReply(request)
+          : isExtractionRequest(request)
+            ? EMPTY_CLAIMS_REPLY
+            : DEFAULT_REPLY
         : typeof this.reply === "function"
           ? this.reply(request)
           : this.reply;
