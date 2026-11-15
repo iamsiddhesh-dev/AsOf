@@ -13,6 +13,8 @@ export type Citation = {
   title: string;
   url: string;
   publishedAt: string | null;
+  /** The evidence text the model was allowed to use. */
+  snippet: string;
 };
 
 export type AnswerStepStatus = "done" | "blocked" | "not_built";
@@ -110,6 +112,7 @@ function toCitations(sources: SearchResult[], firstIndex: number): Citation[] {
     title: source.title,
     url: source.url,
     publishedAt: source.publishedAt,
+    snippet: source.snippet,
   }));
 }
 

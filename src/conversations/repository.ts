@@ -253,6 +253,14 @@ export function appendTurn(db: Db, input: AppendTurnInput): Turn {
   return turn;
 }
 
+export function setTurnClaimsStatus(
+  db: Db,
+  turnId: string,
+  status: "pending" | "done" | "failed" | "skipped",
+): void {
+  db.prepare("UPDATE turns SET claims_status = ? WHERE id = ?").run(status, turnId);
+}
+
 export function listTurns(
   db: Db,
   conversationId: string,

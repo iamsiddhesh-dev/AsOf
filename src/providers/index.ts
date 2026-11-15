@@ -17,6 +17,18 @@ export function createChatClient(): ChatClient | null {
   return new OpenAIChatClient({ baseUrl, apiKey });
 }
 
+/**
+ * Extraction is a fast call. It can point at a different provider than
+ * synthesis, so it gets its own client rather than borrowing the main one.
+ */
+export function createFastChatClient(): ChatClient | null {
+  const { baseUrl, apiKey } = config.model.fast;
+  if (apiKey === null) {
+    return null;
+  }
+  return new OpenAIChatClient({ baseUrl, apiKey });
+}
+
 export function createSearchClient(
   db: Db,
   clock: () => Date,

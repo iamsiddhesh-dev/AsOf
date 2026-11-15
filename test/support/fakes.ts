@@ -33,6 +33,19 @@ export const FIXTURE_SOURCES: SearchResult[] = [
 export const DEFAULT_REPLY =
   "HubSpot Starter is 20 USD per seat per month [s1]. An earlier source listed 15 USD [s2], so the price has increased.";
 
+export const EMPTY_CLAIMS_REPLY = '{"claims":[]}';
+
+/** True when the request is the claim-extraction prompt, not synthesis. */
+export function isExtractionRequest(request: ChatRequest): boolean {
+  return request.messages.some(
+    (message) =>
+      message.role === "system" &&
+      message.content.includes("You extract atomic factual claims"),
+  );
+}
+
+export type ChatResponder = (request: ChatRequest) => string;
+
 export class FakeSearch implements SearchClient {
   readonly name = "fake";
   calls = 0;
@@ -60,13 +73,28 @@ export class FakeChat implements ChatClient {
   calls = 0;
   readonly requests: ChatRequest[] = [];
 
-  constructor(private readonly reply: string = DEFAULT_REPLY) {}
+  /**
+   * No argument answers synthesis with DEFAULT_REPLY and extraction with an
+   * empty claim list. An explicit string or responder takes full control, which
+   * the claim tests need.
+   */
+  constructor(private readonly reply: string | ChatResponder | null = null) {}
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     this.calls += 1;
     this.requests.push(request);
+
+    const content =
+      this.reply === null
+        ? isExtractionRequest(request)
+          ? EMPTY_CLAIMS_REPLY
+          : DEFAULT_REPLY
+        : typeof this.reply === "function"
+          ? this.reply(request)
+          : this.reply;
+
     return {
-      content: this.reply,
+      content,
       model: request.model,
       latencyMs: 0,
       usage: { input: 100, output: 20 },

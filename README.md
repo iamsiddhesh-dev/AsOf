@@ -97,34 +97,49 @@ Date resolution is not hardcoded. `yesterday` is computed from the current time 
 | `recall` | a SQLite read, never a model call, listing the turns and naming the date range used |
 | `search` | one Tavily search, then one synthesis call with five numbered sources |
 | `chat` | a fixed reply; no provider call |
-| `recheck` | reports `not_built`: claim extraction does not exist yet |
+| `recheck` | reports `not_built`: claims are stored, but diffing them is the next slice |
 
 A search answer is only marked `grounded: true` when the reply cites an `[sN]` id that matches a source returned by that search. A model that answers without citing, or cites `[s9]` out of nowhere, produces `grounded: false` — the answer is returned with its citations and a visible flag, not silently trusted. This is what caught `gpt-oss-120b` swapping `[s1]` for `【s1】`.
 
 Search results are cached in `search_cache` for 15 minutes, keyed by provider, query, and count. A recheck step carries `bypassCache` and refetches. Generated answers store the model, latency, and token counts on the assistant turn.
 
+### Claims
+
+A grounded answer is followed by one extraction call on the fast model. The model returns JSON claims, and each claim is only stored if its `quote` appears **verbatim** in the snippet of the source it cites. A paraphrased quote, an invented number, or an `[sN]` id that was never returned is dropped and counted in `dropped`. This is the rule that makes a later recheck meaningful: the ledger only holds what the evidence actually said.
+
+Stored claims go into `claims` with the quote, the value, and a `source_id`; the cited pages are written to `sources`. A new active claim on the same subject, attribute, currency, and period supersedes the previous one, so an annual price does not overwrite a monthly price and the ledger keeps the history instead of overwriting it. The assistant turn records `claims_status` as `done`, `failed`, or `skipped` (no grounding, nothing to extract).
+
+The response carries the summary:
+
+```json
+{ "claims": { "inserted": 2, "superseded": 0, "dropped": 1, "reason": null } }
+```
+
+Extraction failure never discards the answer the user already has. The turn is marked `failed` and the reason is returned.
+
 No key? The endpoint returns `503` naming what is missing, rather than failing halfway through a turn.
 
-One real question end to end, spending one search credit and one model request:
+One real question end to end, spending one search credit and two model requests (synthesis plus extraction):
 
 ```bash
 npm run smoke:answer
 ```
 
 ```text
-http      200  (3054 ms wall)
+http      200  (3492 ms wall)
 model     openai/gpt-oss-20b
 grounded  true
 steps     search:done
 
-HubSpot's own pricing page lists the Starter plan at $7 per seat per month when
-billed annually, or $10 per seat per month if paid month‑to‑month [s1][s4][s5].
-Other recent guides report $15 per month per user [s2][s3]. ...
+HubSpot's Starter plan is priced at $7 per seat per month when you pay annually,
+or $10 per seat per month on a month-to-month basis. The standard price is $20
+per seat per month, but the current offer gives up to 65 % off [s1][s3][s4].
 
   [s1] HubSpot's Starter Plan — https://www.hubspot.com/products/crm/starter
   ...
 
 ledger    2 turn(s): user, assistant
+claims    4 stored, 0 superseded, 0 dropped
 ```
 
 ## What works today
@@ -135,14 +150,15 @@ ledger    2 turn(s): user, assistant
 - Demo history loading.
 - `.env` loading with real environment variables taking precedence, plus `npm run doctor` and `npm run probe:models`.
 - A search answer with real sources, strict citation checks, a `grounded` flag, and both turns written to the ledger.
+- Verbatim-checked claim extraction after grounded answers, with `sources` rows and supersession history.
 - Deterministic eval coverage of the answer path through injected fixtures.
 
 ## What does not work yet
 
-- `recheck` is planned but not executed: no claims are extracted, so there is nothing to diff. It returns `not_built` rather than guessing "nothing changed".
+- `recheck` is planned but not executed: claims are stored now, but the diff against a fresh search is the next slice. It returns `not_built` rather than guessing "nothing changed".
 - No entity-set population, so "any of them" usually asks for the referent first.
 - No streaming and no UI. Answers arrive as one JSON body.
-- Search results become claims only after claim extraction exists; today the citations live on the answer, not in `sources` rows.
+- Claim extraction is only as good as the extraction prompt: claims the model omits are not recovered, and `dropped` counts rejected claims rather than explaining each one.
 
 The README says this because an agent that overstates its own state is the failure mode this project exists to avoid.
 

@@ -108,6 +108,9 @@ export class OpenAIChatClient implements ChatClient {
             messages: request.messages,
             max_tokens: request.maxTokens ?? 800,
             temperature: request.temperature ?? 0,
+            ...(request.reasoningEffort === undefined
+              ? {}
+              : { reasoning_effort: request.reasoningEffort }),
           }),
           signal: AbortSignal.timeout(timeoutMs),
         });

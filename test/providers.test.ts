@@ -77,6 +77,34 @@ describe("openai-compatible chat client", () => {
     assert.equal(calls, 1);
   });
 
+  it("sends reasoning_effort only when the caller asks for it", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const client = new OpenAIChatClient({
+      baseUrl: "https://example.test/v1",
+      apiKey: "test",
+      retries: 0,
+      fetchImpl: async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return jsonResponse({
+          choices: [{ message: { content: '{"claims":[]}' } }],
+        });
+      },
+    });
+
+    await client.chat({
+      model: "test-model",
+      messages: [{ role: "user", content: "question" }],
+    });
+    await client.chat({
+      model: "test-model",
+      messages: [{ role: "user", content: "question" }],
+      reasoningEffort: "low",
+    });
+
+    assert.equal("reasoning_effort" in (bodies[0] ?? {}), false);
+    assert.equal(bodies[1]?.["reasoning_effort"], "low");
+  });
+
   it("treats an empty completion as an error, naming the finish reason", async () => {
     const client = new OpenAIChatClient({
       baseUrl: "https://example.test/v1",
