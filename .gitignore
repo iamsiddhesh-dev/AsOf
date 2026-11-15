@@ -39,6 +39,12 @@ node_modules/
 .env.*
 !.env.example
 
+# Local database
+/data/
+*.db
+*.db-shm
+*.db-wal
+
 # Build output and logs
 /dist/
 /build/
