@@ -8,10 +8,12 @@ import {
   listConversations,
   listTurns,
   recallTurns,
+  type Turn,
   type TurnRole,
 } from "../conversations/repository.js";
 import type { Db } from "../db/index.js";
 import { countClaims } from "../ledger/claims.js";
+import { listTurnSources, type TurnSource } from "../ledger/turn-sources.js";
 import { classify } from "../router/classify.js";
 import { isValidTimeZone, resolveDateRange } from "../time/resolve.js";
 
@@ -59,6 +61,15 @@ export function conversationRoutes(
 ) {
   const router = new Hono();
   const clock = options.clock ?? (() => new Date());
+
+  /** Turns carry their citations, so a reopened answer keeps its footnotes. */
+  const withSources = (
+    turns: Turn[],
+  ): Array<Turn & { sources: TurnSource[] }> =>
+    turns.map((turn) => ({
+      ...turn,
+      sources: listTurnSources(db, turn.id),
+    }));
 
   router.post("/", async (c) => {
     const body = await readJson(c);
@@ -247,11 +258,11 @@ export function conversationRoutes(
       }
       return c.json({
         range,
-        turns: recallTurns(db, conversation.id, range, limit),
+        turns: withSources(recallTurns(db, conversation.id, range, limit)),
       });
     }
 
-    return c.json({ turns: listTurns(db, conversation.id, limit) });
+    return c.json({ turns: withSources(listTurns(db, conversation.id, limit)) });
   });
 
   return router;

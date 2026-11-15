@@ -1,10 +1,12 @@
 import { extractClaims, type ClaimExtractionResult } from "../claims/extract.js";
+import { upsertSources } from "../claims/store.js";
 import {
   appendTurn,
   setTurnClaimsStatus,
   type Turn,
 } from "../conversations/repository.js";
 import type { Db } from "../db/index.js";
+import { attachTurnSources } from "../ledger/turn-sources.js";
 import type { ChatClient } from "../providers/types.js";
 import { applyClaimUpdates } from "../recheck/compare.js";
 import type { RouteDecision } from "../router/classify.js";
@@ -90,6 +92,30 @@ export async function persistAnswer(
 
   let claims: ClaimExtractionResult = { ...EMPTY_CLAIMS };
   let claimsStatus: ClaimsStatus = "skipped";
+
+  // The citations are stored against the turn before anything else touches
+  // them, so reopening this conversation can still show the evidence. Claim
+  // extraction below re-upserts the same source rows; the id is a content
+  // hash, so that is an update, not a duplicate.
+  if (result.citations.length > 0) {
+    const stored = upsertSources(
+      db,
+      result.citations,
+      deps.searchProvider,
+      deps.clock().toISOString(),
+    );
+
+    attachTurnSources(
+      db,
+      assistantTurn.id,
+      result.citations.flatMap((citation) => {
+        const sourceRowId = stored.get(citation.id);
+        return sourceRowId === undefined
+          ? []
+          : [{ label: citation.id, sourceRowId }];
+      }),
+    );
+  }
 
   if (result.recheck !== null) {
     let applyError: string | null = null;

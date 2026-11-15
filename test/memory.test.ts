@@ -56,7 +56,7 @@ async function recall(text: string, extra: Record<string, unknown> = {}) {
 }
 
 describe("memory recall", () => {
-  it("applies the demo flag migration on top of the first schema", () => {
+  it("applies every migration in order on top of the first schema", () => {
     const columns = db
       .prepare("PRAGMA table_info(turns)")
       .all() as Array<{ name: string }>;
@@ -67,7 +67,7 @@ describe("memory recall", () => {
       .all() as Array<{ version: number }>;
     assert.deepEqual(
       versions.map((row) => row.version),
-      [1, 2],
+      [1, 2, 3],
     );
   });
 
