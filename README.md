@@ -8,6 +8,8 @@ AsOf is a local-first temporal agent. It remembers what was true, when it was tr
 
 Early development. The first milestone is the smallest working version that can prove one claim end to end: a user message, a route, a source, a quote, a verdict, and a receipt.
 
+The architecture argument — what is stored, why, and what is deliberately not built — is in [DESIGN.md](DESIGN.md).
+
 ## Run
 
 ```bash
