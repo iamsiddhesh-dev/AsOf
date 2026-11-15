@@ -119,6 +119,47 @@ describe("deterministic router", () => {
     assert.equal(windowed.timeRange?.label, "last 7 days");
   });
 
+  it("splits a compound question into ordered steps", () => {
+    const decision = route(
+      "what did i ask on 3 november? is your answer still correct today?",
+    );
+
+    assert.deepEqual(
+      decision.steps.map((step) => step.action),
+      ["recall", "recheck"],
+    );
+    assert.equal(decision.intent, "recall");
+    assert.equal(decision.requiresSearch, true);
+    assert.equal(decision.bypassCache, true);
+    assert.equal(decision.steps[1]?.mode, "claims");
+    assert.equal(decision.clarification, null);
+  });
+
+  it("marks a recheck about launches as a news scan, not a claim diff", () => {
+    const decision = route("has any of them shipped something big since?", {
+      state: state({
+        activeEntitySet: { id: "set-1", name: "crm shortlist", members: ["hubspot"] },
+      }),
+      priorClaimCount: 2,
+    });
+
+    assert.equal(decision.steps.length, 1);
+    assert.equal(decision.steps[0]?.action, "recheck");
+    assert.equal(decision.steps[0]?.mode, "news");
+  });
+
+  it("explains what it is blocked on when it asks a question", () => {
+    assert.equal(route("is that still true?").blockedBy, "no_prior_answer");
+    assert.equal(route("any of them changed?").blockedBy, "no_entity_set");
+    assert.equal(route("what did i ask on 31 february?").blockedBy, "unresolved_date");
+  });
+
+  it("drops small talk that trails a real question", () => {
+    const decision = route("what is hubspot starter pricing? thanks");
+    assert.equal(decision.steps.length, 1);
+    assert.equal(decision.intent, "search");
+  });
+
   it("handles small talk without searching", () => {
     assert.equal(route("hello").intent, "meta");
     assert.equal(route("thanks!").intent, "meta");

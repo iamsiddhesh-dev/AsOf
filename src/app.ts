@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { Db } from "./db/index.js";
 import { conversationRoutes } from "./routes/conversations.js";
+import { demoRoutes } from "./routes/demo.js";
+import { memoryRoutes } from "./routes/memory.js";
 
 export type AppOptions = {
   clock?: () => Date;
@@ -16,6 +18,7 @@ const LEDGER_TABLES = [
 
 export function createApp(db: Db, options: AppOptions = {}) {
   const app = new Hono();
+  const clock = options.clock ?? (() => new Date());
 
   app.get("/health", (c) => {
     const row = db.prepare("SELECT 1 AS ok").get() as { ok: number };
@@ -23,7 +26,7 @@ export function createApp(db: Db, options: AppOptions = {}) {
       ok: row.ok === 1,
       service: "asof",
       version: "0.1.0",
-      time: new Date().toISOString(),
+      time: clock().toISOString(),
     });
   });
 
@@ -49,6 +52,8 @@ export function createApp(db: Db, options: AppOptions = {}) {
   });
 
   app.route("/api/conversations", conversationRoutes(db, options));
+  app.route("/api/memory", memoryRoutes(db, options));
+  app.route("/api/demo", demoRoutes(db, options));
 
   return app;
 }
