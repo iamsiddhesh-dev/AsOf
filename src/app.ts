@@ -1,5 +1,10 @@
 import { Hono } from "hono";
 import type { Db } from "./db/index.js";
+import { conversationRoutes } from "./routes/conversations.js";
+
+export type AppOptions = {
+  clock?: () => Date;
+};
 
 const LEDGER_TABLES = [
   "conversations",
@@ -9,7 +14,7 @@ const LEDGER_TABLES = [
   "watches",
 ] as const;
 
-export function createApp(db: Db) {
+export function createApp(db: Db, options: AppOptions = {}) {
   const app = new Hono();
 
   app.get("/health", (c) => {
@@ -42,6 +47,8 @@ export function createApp(db: Db) {
       counts,
     });
   });
+
+  app.route("/api/conversations", conversationRoutes(db, options));
 
   return app;
 }
