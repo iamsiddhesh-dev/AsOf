@@ -1,0 +1,45 @@
+# Local planning and research. Keep these out of the public repository.
+/PLAN.md
+/architecture.html
+/architecture.png
+/architecture-explained.html
+/ARCHITECTURE_EXPLAINED.pdf
+/agent-examples-and-industry.html
+/AGENT_EXAMPLES_AND_INDUSTRY.pdf
+/_agent_examples_draft.pdf
+
+# Local notes and drafts
+/notes/
+/drafts/
+/research/
+*.local.md
+
+# OS and editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Build output and logs
+/dist/
+/build/
+*.log
