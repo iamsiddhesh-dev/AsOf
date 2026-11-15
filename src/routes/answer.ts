@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { answerQuestion, type AnswerResult } from "../answer/answer.js";
 import { extractClaims, type ClaimExtractionResult } from "../claims/extract.js";
+import { applyClaimUpdates } from "../recheck/compare.js";
 import { config } from "../config.js";
 import {
   appendTurn,
@@ -147,13 +148,18 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
     // ledger as it was before this question, not after it.
     let result: AnswerResult;
     try {
-      result = await answerQuestion(db, { search, chat, model }, {
-        text,
-        timezone,
-        now,
-        decision,
-        keyword,
-      });
+      result = await answerQuestion(
+        db,
+        { search, chat, model, extractChat, extractModel },
+        {
+          text,
+          timezone,
+          now,
+          decision,
+          state: conversation.state,
+          keyword,
+        },
+      );
     } catch (error) {
       const providerError = error instanceof ProviderError ? error : null;
       const userTurn = appendTurn(db, userTurnInput);
@@ -184,20 +190,59 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
     });
 
     /**
-     * Only a grounded answer has evidence worth extracting from. A failed
-     * extraction is recorded on the turn, not raised: the answer the user
-     * already has is still valid, it simply has no claims to recheck yet.
+     * A grounding answer gets its claims from extraction. A claims-mode recheck
+     * already compared and wrote what it found, so extracting the same answer
+     * again would only duplicate the claims it just superseded.
      */
-    let claims: ClaimExtractionResult;
-    if (result.grounded === true && result.citations.length > 0) {
+    let claims: ClaimExtractionResult = {
+      inserted: 0,
+      superseded: 0,
+      dropped: 0,
+      reason: null,
+    };
+    let claimsStatus: "done" | "failed" | "skipped" = "skipped";
+
+    if (result.recheck !== null) {
+      let applyError: string | null = null;
+
+      if (result.claimUpdates.length > 0) {
+        try {
+          const applied = applyClaimUpdates(db, result.claimUpdates, {
+            turnId: assistantTurn.id,
+            conversationId: conversation.id,
+            now: clock(),
+          });
+          claims = {
+            inserted: applied.inserted,
+            superseded: applied.superseded,
+            dropped: 0,
+            reason: null,
+          };
+        } catch (error) {
+          applyError = (error as Error).message;
+        }
+      }
+
+      if (applyError !== null) {
+        claims = { ...claims, reason: applyError };
+        claimsStatus = "failed";
+      } else if (result.recheck.status === "done") {
+        claimsStatus = "done";
+      } else {
+        claims = {
+          ...claims,
+          reason: "recheck did not compare any claims",
+        };
+      }
+    } else if (result.grounded === true && result.citations.length > 0) {
       if (extractChat === null) {
-        setTurnClaimsStatus(db, assistantTurn.id, "failed");
         claims = {
           inserted: 0,
           superseded: 0,
           dropped: 0,
           reason: "extraction provider is not configured",
         };
+        claimsStatus = "failed";
       } else {
         try {
           claims = await extractClaims(
@@ -212,19 +257,18 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
               provider: search.name,
             },
           );
-          setTurnClaimsStatus(db, assistantTurn.id, "done");
+          claimsStatus = "done";
         } catch (error) {
-          setTurnClaimsStatus(db, assistantTurn.id, "failed");
           claims = {
             inserted: 0,
             superseded: 0,
             dropped: 0,
             reason: (error as Error).message,
           };
+          claimsStatus = "failed";
         }
       }
     } else {
-      setTurnClaimsStatus(db, assistantTurn.id, "skipped");
       claims = {
         inserted: 0,
         superseded: 0,
@@ -233,8 +277,13 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
       };
     }
 
+    setTurnClaimsStatus(db, assistantTurn.id, claimsStatus);
+
+    const { claimUpdates: _claimUpdates, ...publicResult } = result;
+    void _claimUpdates;
+
     return c.json({
-      ...result,
+      ...publicResult,
       claims,
       decision,
       userTurnId: userTurn.id,

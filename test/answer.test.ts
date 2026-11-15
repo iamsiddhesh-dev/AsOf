@@ -127,7 +127,7 @@ describe("answer path", () => {
     assert.equal(body.grounded, false);
   });
 
-  it("says a recheck is not built instead of guessing", async () => {
+  it("says it has no stored claims instead of guessing about a change", async () => {
     appendTurn(db, {
       conversationId,
       role: "user",
@@ -145,9 +145,9 @@ describe("answer path", () => {
 
     assert.deepEqual(
       body.steps.map((step) => [step.action, step.status]),
-      [["recheck", "not_built"]],
+      [["recheck", "blocked"]],
     );
-    assert.match(body.answer, /not built/i);
+    assert.match(body.answer, /no stored claims/i);
     assert.equal(search.calls, 0);
     assert.equal(chat.calls, 0);
   });

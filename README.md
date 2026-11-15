@@ -97,7 +97,7 @@ Date resolution is not hardcoded. `yesterday` is computed from the current time 
 | `recall` | a SQLite read, never a model call, listing the turns and naming the date range used |
 | `search` | one Tavily search, then one synthesis call with five numbered sources |
 | `chat` | a fixed reply; no provider call |
-| `recheck` | reports `not_built`: claims are stored, but diffing them is the next slice |
+| `recheck` | `claims`: fresh search plus a comparison call; `news`: still `not_built` |
 
 A search answer is only marked `grounded: true` when the reply cites an `[sN]` id that matches a source returned by that search. A model that answers without citing, or cites `[s9]` out of nowhere, produces `grounded: false` — the answer is returned with its citations and a visible flag, not silently trusted. This is what caught `gpt-oss-120b` swapping `[s1]` for `【s1】`.
 
@@ -116,6 +116,40 @@ The response carries the summary:
 ```
 
 Extraction failure never discards the answer the user already has. The turn is marked `failed` and the reason is returned.
+
+### Recheck
+
+`has hubspot pricing changed?` selects up to three **active** claims from the whole ledger. A claim is preferred when the question or the conversation's active entity set names its subject; if the question is just "has it changed?", the most recent active claims are used, and the answer says how many it checked. It then searches again with `bypassCache: true`, using the claim's subject and attribute as the query, and asks the fast model for one verdict per claim: `unchanged`, `changed`, or `unknown`.
+
+The same provenance rule applies to verdicts. An `unchanged` or `changed` verdict without a quote that appears verbatim in the cited snippet is downgraded to `unknown`. A `changed` verdict whose new value equals the stored value is also downgraded. Only a trusted `changed` verdict writes anything: after the assistant turn exists, the new claim is stored and the compared claim is marked `superseded`, so the old belief stays in the ledger with the value it had. A recheck with no stored claims, no fresh sources, or unusable JSON reports a `blocked` step and says so; it never returns "nothing changed" from an empty comparison.
+
+`news` mode is still `not_built`: dated launches and announcements are a different extraction job, and the answer says so.
+
+```bash
+npm run smoke:recheck
+```
+
+The script asks a pricing question, then rechecks it in a **new** conversation, which is also the test that memory is global rather than per-conversation:
+
+```text
+ask 1     200  what is hubspot starter pricing?
+claims    6 stored, 0 dropped
+
+ask 2     200  has hubspot pricing changed?
+steps     recheck:done
+grounded  true
+
+I checked 3 stored claims.
+
+HubSpot Starter plan normal price per seat per month is still $20 [s1].
+HubSpot Starter plan discount for new customers is still up to 65% [s1].
+HubSpot Starter plan annual commitment price per seat per month is still $7 [s1].
+
+verdict   unchanged: HubSpot Starter plan normal_price_per_seat_per_month ($20 -> unchanged)
+...
+
+claims    0 stored, 0 superseded
+```
 
 No key? The endpoint returns `503` naming what is missing, rather than failing halfway through a turn.
 
@@ -151,14 +185,16 @@ claims    4 stored, 0 superseded, 0 dropped
 - `.env` loading with real environment variables taking precedence, plus `npm run doctor` and `npm run probe:models`.
 - A search answer with real sources, strict citation checks, a `grounded` flag, and both turns written to the ledger.
 - Verbatim-checked claim extraction after grounded answers, with `sources` rows and supersession history.
+- Claims-mode recheck: global claim selection, fresh search, verbatim-checked verdicts, and supersession of changed values.
 - Deterministic eval coverage of the answer path through injected fixtures.
 
 ## What does not work yet
 
-- `recheck` is planned but not executed: claims are stored now, but the diff against a fresh search is the next slice. It returns `not_built` rather than guessing "nothing changed".
+- News rechecks (`has any of them shipped something?`) still return `not_built`. Only dated claims and announcements would make that lane honest.
 - No entity-set population, so "any of them" usually asks for the referent first.
 - No streaming and no UI. Answers arrive as one JSON body.
 - Claim extraction is only as good as the extraction prompt: claims the model omits are not recovered, and `dropped` counts rejected claims rather than explaining each one.
+- A recheck compares against a fresh open-web search, not a dated archive. `unchanged` means "the current sources still say this", not "this was true continuously since yesterday".
 
 The README says this because an agent that overstates its own state is the failure mode this project exists to avoid.
 
@@ -175,12 +211,12 @@ Twelve cases run against a fresh ledger on a faked clock, in a temporary databas
 
 ```text
 plan    12/12
-answer  9/9   (3 case(s) plan-only)
+answer  11/11   (1 case(s) plan-only)
 ```
 
-The answer cases go through the same handler as production. Search and chat are injected with fixtures, so the harness scores plumbing — citation validation, persistence, refusals — deterministically, with no network and no keys. A fixture does not prove a model is any good; `probe:models` measures that, and `smoke:answer` proves the real pair works once.
+The answer cases go through the same handler as production. Search and chat are injected with fixtures, so the harness scores plumbing — citation validation, persistence, supersession, refusals — deterministically, with no network and no keys. A fixture does not prove a model is any good; `probe:models` measures that, and `smoke:answer` / `smoke:recheck` prove the real pair works once.
 
-A plan failure exits non-zero, because routing regressions are silent otherwise. The three `plan-only` cases are the ones that contain a `recheck` step, which is planned but not executed. They are printed, not skipped, so the gap stays visible instead of being averaged into a number that looks fine.
+A plan failure exits non-zero, because routing regressions are silent otherwise. The one `plan-only` case is the `news` recheck, which is planned but deliberately not executed. It is printed, not skipped, so the gap stays visible instead of being averaged into a number that looks fine.
 
 The eval seeds every question in a new conversation on purpose. If recall or recheck were scoped to the current conversation, these cases would fail.
 

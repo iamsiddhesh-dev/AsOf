@@ -117,7 +117,11 @@ export const CASES: EvalCase[] = [
     id: "compound-recall-then-recheck",
     question: "what did i ask yesterday? is your answer still correct today?",
     seed: "demo",
-    expect: { steps: ["recall", "recheck"], mode: "claims" },
+    expect: {
+      steps: ["recall", "recheck"],
+      mode: "claims",
+      answer: { matches: /no stored claims/i },
+    },
   },
   {
     id: "recheck-claims-with-history",
@@ -132,7 +136,15 @@ export const CASES: EvalCase[] = [
       ],
       claim: true,
     },
-    expect: { steps: ["recheck"], mode: "claims" },
+    expect: {
+      steps: ["recheck"],
+      mode: "claims",
+      answer: {
+        contains: ["HubSpot", "still 20"],
+        grounded: true,
+        minCitations: 1,
+      },
+    },
   },
   {
     id: "recheck-news-with-entity-set",
