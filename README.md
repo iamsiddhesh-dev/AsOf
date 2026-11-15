@@ -36,6 +36,7 @@ GET  /api/conversations/:id/turns
 GET  /api/conversations/:id/turns?date=3%20november
 POST /api/conversations/:id/route
 POST /api/conversations/:id/ask
+POST /api/conversations/:id/ask/stream
 
 POST /api/memory/recall
 GET  /api/memory/stats
@@ -153,6 +154,47 @@ claims    0 stored, 0 superseded
 
 No key? The endpoint returns `503` naming what is missing, rather than failing halfway through a turn.
 
+### Streaming
+
+`POST /:id/ask/stream` runs the same plan and reports it while it happens, over SSE. It is not a typing animation: `recall` is a database read and arrives as one block, and only model synthesis is streamed.
+
+| Event | When | Payload |
+|---|---|---|
+| `decision` | once, before any work | intent, confidence, resolved time range, blocked reason, planned steps |
+| `step` | when a step starts and again when it finishes | `action`, `status` (`running`, `done`, `blocked`, `not_built`), optional `detail` |
+| `sources` | as soon as a search returns | the numbered citations the answer is allowed to use |
+| `block` | a finished non-generated part | `index`, `kind` (`recall`, `recheck`, `chat`, `clarify`, `search`), `text` |
+| `delta` | per model token | `index` (the answer part it belongs to) and `text` |
+| `done` | after the ledger write | the same body `/ask` returns, plus `claimsStatus` and both turn ids |
+| `error` | if a provider or the plan fails | message, provider, HTTP status, `retryable`, and the recorded user turn id |
+
+Blocks and deltas are ordered and numbered. Joining the parts by index with a blank line reproduces `done.answer` exactly, so a client can render progressively and then settle on the stored answer.
+
+Turns are written **on completion**, not when the stream opens. A half-written assistant turn would be visible to recall and would make `lastAnswerTurnId` point at an answer nobody finished; the same reason `/ask` computes the answer before writing anything. A client that disconnects loses the partial answer, but the question is not recorded because the plan never completed.
+
+```bash
+npm run smoke:stream
+```
+
+```text
+decision  search
+step      search:running
+sources   5 fetched
+  [s1] HubSpot's Starter Plan for Startups & Small Businesses — https://www.hubspot.com/products/crm/starter
+  ...
+step      search:done — 5 source(s)
+
+delta     94 chunk(s), 368 chars, first at 4183 ms
+wall      5594 ms
+
+HubSpot’s Starter plan is normally priced at $20 per seat per month, but for a
+limited time new customers can get up to 65 % off...
+
+grounded  true  ·  model openai/gpt-oss-20b
+claims    6 stored, 1 superseded, 0 dropped
+ledger    2 turn(s): user, assistant
+```
+
 One real question end to end, spending one search credit and two model requests (synthesis plus extraction):
 
 ```bash
@@ -186,13 +228,14 @@ claims    4 stored, 0 superseded, 0 dropped
 - A search answer with real sources, strict citation checks, a `grounded` flag, and both turns written to the ledger.
 - Verbatim-checked claim extraction after grounded answers, with `sources` rows and supersession history.
 - Claims-mode recheck: global claim selection, fresh search, verbatim-checked verdicts, and supersession of changed values.
+- A streaming endpoint that reports the decision, each step, sources, and real model tokens as they arrive, then persists both turns on completion.
 - Deterministic eval coverage of the answer path through injected fixtures.
 
 ## What does not work yet
 
 - News rechecks (`has any of them shipped something?`) still return `not_built`. Only dated claims and announcements would make that lane honest.
 - No entity-set population, so "any of them" usually asks for the referent first.
-- No streaming and no UI. Answers arrive as one JSON body.
+- No frontend yet. The API is the only client, and citations are returned in the response body rather than stored per turn, so a reopenable source inspector needs one more table.
 - Claim extraction is only as good as the extraction prompt: claims the model omits are not recovered, and `dropped` counts rejected claims rather than explaining each one.
 - A recheck compares against a fresh open-web search, not a dated archive. `unchanged` means "the current sources still say this", not "this was true continuously since yesterday".
 

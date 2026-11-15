@@ -65,8 +65,21 @@ export type ChatResponse = {
   usage: ChatUsage;
 };
 
+/**
+ * Token sink for a streaming completion. It may return a promise so a slow
+ * consumer (an SSE socket, a test) applies backpressure to the reader instead
+ * of letting tokens pile up in memory.
+ */
+export type ChatDeltaHandler = (delta: string) => void | Promise<void>;
+
 export interface ChatClient {
   chat(request: ChatRequest): Promise<ChatResponse>;
+  /**
+   * Optional. Fixtures and non-streaming providers implement `chat` alone, and
+   * the answer path falls back to it. The returned response is the complete
+   * completion, identical to what `chat` would have returned.
+   */
+  stream?(request: ChatRequest, onDelta: ChatDeltaHandler): Promise<ChatResponse>;
 }
 
 /**

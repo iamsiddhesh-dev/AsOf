@@ -1,5 +1,6 @@
 import type {
   ChatClient,
+  ChatDeltaHandler,
   ChatRequest,
   ChatResponse,
   SearchClient,
@@ -133,5 +134,23 @@ export class FakeChat implements ChatClient {
       latencyMs: 0,
       usage: { input: 100, output: 20 },
     };
+  }
+
+  /**
+   * The same fixture reply, delivered in word-sized deltas. It is not a real
+   * tokenizer, but it proves the caller forwards chunks in order and that the
+   * assembled text matches the non-streaming answer.
+   */
+  async stream(
+    request: ChatRequest,
+    onDelta: ChatDeltaHandler,
+  ): Promise<ChatResponse> {
+    const response = await this.chat(request);
+
+    for (const piece of response.content.match(/\S+\s*/g) ?? []) {
+      await onDelta(piece);
+    }
+
+    return response;
   }
 }
