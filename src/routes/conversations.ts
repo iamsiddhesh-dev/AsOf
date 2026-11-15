@@ -11,6 +11,8 @@ import {
   type TurnRole,
 } from "../conversations/repository.js";
 import type { Db } from "../db/index.js";
+import { countClaims } from "../ledger/claims.js";
+import { classify } from "../router/classify.js";
 import { isValidTimeZone, resolveDateRange } from "../time/resolve.js";
 
 type JsonObject = Record<string, unknown>;
@@ -157,13 +159,15 @@ export function conversationRoutes(
         ? null
         : getTurn(db, conversation.state.lastAnswerTurnId)?.createdAt ?? null;
 
-    const resolved =
+    const decision =
       role === "user"
-        ? resolveDateRange(content, {
+        ? classify({
+            text: content,
             now,
             timezone: conversation.timezone,
+            state: conversation.state,
             lastAnswerAt,
-            direction: "past",
+            priorClaimCount: countClaims(db, conversation.id),
           })
         : null;
 
@@ -173,12 +177,46 @@ export function conversationRoutes(
       content,
       createdAt: now.toISOString(),
       parentTurnId,
-      resolvedStart: resolved?.start ?? null,
-      resolvedEnd: resolved?.end ?? null,
-      resolvedLabel: resolved?.label ?? null,
+      resolvedStart: decision?.timeRange?.start ?? null,
+      resolvedEnd: decision?.timeRange?.end ?? null,
+      resolvedLabel: decision?.timeRange?.label ?? null,
+      intent: decision?.intent ?? null,
     });
 
     return c.json(turn, 201);
+  });
+
+  router.post("/:id/route", async (c) => {
+    const conversation = getConversation(db, c.req.param("id"));
+    if (conversation === null) {
+      return c.json({ error: "conversation not found" }, 404);
+    }
+
+    const body = await readJson(c);
+    if (body === null) {
+      return c.json({ error: "body must be a json object" }, 400);
+    }
+
+    const text = nonEmptyString(body["text"]);
+    if (text === null) {
+      return c.json({ error: "text must be a non-empty string" }, 400);
+    }
+
+    const lastAnswerAt =
+      conversation.state.lastAnswerTurnId === null
+        ? null
+        : getTurn(db, conversation.state.lastAnswerTurnId)?.createdAt ?? null;
+
+    return c.json(
+      classify({
+        text,
+        now: clock(),
+        timezone: conversation.timezone,
+        state: conversation.state,
+        lastAnswerAt,
+        priorClaimCount: countClaims(db, conversation.id),
+      }),
+    );
   });
 
   router.get("/:id/turns", (c) => {

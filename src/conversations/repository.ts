@@ -159,6 +159,7 @@ export type AppendTurnInput = {
   resolvedStart?: string | null;
   resolvedEnd?: string | null;
   resolvedLabel?: string | null;
+  intent?: string | null;
   model?: string | null;
 };
 
@@ -196,9 +197,9 @@ export function appendTurn(db: Db, input: AppendTurnInput): Turn {
     db.prepare(
       `INSERT INTO turns
         (id, conversation_id, role, content, created_at, model,
-         resolved_start, resolved_end, resolved_label, status,
+         resolved_start, resolved_end, resolved_label, intent, status,
          claims_status, parent_turn_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 'pending', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 'pending', ?)`,
     ).run(
       id,
       input.conversationId,
@@ -209,6 +210,7 @@ export function appendTurn(db: Db, input: AppendTurnInput): Turn {
       input.resolvedStart ?? null,
       input.resolvedEnd ?? null,
       input.resolvedLabel ?? null,
+      input.intent ?? null,
       input.parentTurnId ?? null,
     );
 
