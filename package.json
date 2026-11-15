@@ -17,6 +17,7 @@
     "probe:models": "tsx scripts/probe-models.ts",
     "smoke:answer": "tsx scripts/smoke-answer.ts",
     "smoke:recheck": "tsx scripts/smoke-recheck.ts",
+    "smoke:stream": "tsx scripts/smoke-stream.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

@@ -1,7 +1,12 @@
 import type { Db } from "../db/index.js";
 import type { ConversationState } from "../conversations/state.js";
 import { answerRecall, formatLocalDate } from "../memory/recall.js";
-import type { ChatClient, SearchClient, SearchResult } from "../providers/types.js";
+import type {
+  ChatClient,
+  ChatRequest,
+  SearchClient,
+  SearchResult,
+} from "../providers/types.js";
 import {
   recheckClaims,
   type ClaimUpdate,
@@ -29,6 +34,34 @@ export type AnswerStep = {
   action: RouteAction;
   status: AnswerStepStatus;
   detail: string;
+};
+
+/**
+ * A finished piece of the answer that was not typed token by token. Recall and
+ * recheck are reads and verdict lists, so they arrive whole; only model
+ * synthesis streams, and it arrives as `onDelta`.
+ */
+export type AnswerBlockKind =
+  | "chat"
+  | "clarify"
+  | "recall"
+  | "recheck"
+  | "search";
+
+export type AnswerBlock = {
+  /** Index into the answer's `parts`, so blocks and deltas interleave. */
+  index: number;
+  kind: AnswerBlockKind;
+  text: string;
+};
+
+export type AnswerHooks = {
+  onStepStart?: (action: RouteAction) => void | Promise<void>;
+  onStep?: (step: AnswerStep) => void | Promise<void>;
+  /** Newly fetched sources, emitted before the synthesis that cites them. */
+  onSources?: (citations: Citation[]) => void | Promise<void>;
+  onBlock?: (block: AnswerBlock) => void | Promise<void>;
+  onDelta?: (index: number, text: string) => void | Promise<void>;
 };
 
 export type AnswerResult = {
@@ -67,6 +100,8 @@ export type AnswerInput = {
   state?: ConversationState | null;
   /** Hand-supplied keyword for date-range recall; extraction is a model job. */
   keyword?: string | null;
+  /** Absent for the non-streaming endpoint, which only needs the final text. */
+  hooks?: AnswerHooks;
 };
 
 const MAX_SOURCES = 5;
@@ -172,13 +207,25 @@ type SearchStepResult = {
   model: string | null;
   tokenIn: number | null;
   tokenOut: number | null;
+  /** True when the model actually streamed this text to the caller. */
+  streamed: boolean;
 };
+
+async function emit<T>(
+  hook: ((value: T) => void | Promise<void>) | undefined,
+  value: T,
+): Promise<void> {
+  if (hook !== undefined) {
+    await hook(value);
+  }
+}
 
 async function runSearch(
   step: RouteStep,
   input: AnswerInput,
   deps: AnswerDeps,
   firstIndex: number,
+  partIndex: number,
 ): Promise<SearchStepResult> {
   const query = step.query ?? input.text;
   const response = await deps.search.search(query, {
@@ -194,11 +241,17 @@ async function runSearch(
       model: null,
       tokenIn: null,
       tokenOut: null,
+      streamed: false,
     };
   }
 
   const citations = toCitations(response.results, firstIndex);
-  const completion = await deps.chat.chat({
+
+  // Sources go out before the first token: the UI can render what the answer
+  // is allowed to cite while the answer is still being written.
+  await emit(input.hooks?.onSources, citations);
+
+  const request: ChatRequest = {
     model: deps.model,
     messages: [
       { role: "system", content: SYNTH_SYSTEM },
@@ -209,7 +262,13 @@ async function runSearch(
     ],
     maxTokens: 700,
     temperature: 0,
-  });
+  };
+
+  const onDelta = input.hooks?.onDelta;
+  const completion =
+    onDelta !== undefined && deps.chat.stream !== undefined
+      ? await deps.chat.stream(request, (delta) => onDelta(partIndex, delta))
+      : await deps.chat.chat(request);
 
   return {
     text: completion.content,
@@ -218,6 +277,7 @@ async function runSearch(
     model: completion.model,
     tokenIn: completion.usage.input,
     tokenOut: completion.usage.output,
+    streamed: onDelta !== undefined && deps.chat.stream !== undefined,
   };
 }
 
@@ -233,10 +293,13 @@ export async function answerQuestion(
 ): Promise<AnswerResult> {
   const started = Date.now();
   const { decision } = input;
+  const hooks = input.hooks;
 
   if (decision.steps.length === 0) {
+    const text = clarifyMessage(decision.blockedBy);
+    await emit(hooks?.onBlock, { index: 0, kind: "clarify", text });
     return {
-      answer: clarifyMessage(decision.blockedBy),
+      answer: text,
       steps: [],
       citations: [],
       grounded: null,
@@ -263,18 +326,31 @@ export async function answerQuestion(
   let tokenIn: number | null = null;
   let tokenOut: number | null = null;
 
+  const addBlock = async (kind: AnswerBlockKind, text: string): Promise<void> => {
+    const index = parts.length;
+    parts.push(text);
+    await emit(hooks?.onBlock, { index, kind, text });
+  };
+
+  const recordStep = async (step: AnswerStep): Promise<void> => {
+    steps.push(step);
+    await emit(hooks?.onStep, step);
+  };
+
   for (const step of decision.steps) {
+    await emit(hooks?.onStepStart, step.action);
+
     if (step.action === "chat") {
-      parts.push(CHAT_REPLY);
-      steps.push({ action: "chat", status: "done", detail: "fixed reply" });
+      await addBlock("chat", CHAT_REPLY);
+      await recordStep({ action: "chat", status: "done", detail: "fixed reply" });
       continue;
     }
 
     if (step.action === "recall") {
       const recall = formatRecall(db, input);
-      parts.push(recall.text);
       demo = demo || recall.demo;
-      steps.push({
+      await addBlock("recall", recall.text);
+      await recordStep({
         action: "recall",
         status: "done",
         detail: recall.demo ? "read from demo history" : "read from the ledger",
@@ -284,8 +360,8 @@ export async function answerQuestion(
 
     if (step.action === "recheck") {
       if (step.mode === "news") {
-        parts.push(NEWS_RECHECK);
-        steps.push({
+        await addBlock("recheck", NEWS_RECHECK);
+        await recordStep({
           action: "recheck",
           status: "not_built",
           detail: "mode news: dated-news extraction is not built",
@@ -310,8 +386,8 @@ export async function answerQuestion(
         },
       );
 
-      parts.push(compared.text);
       citations.push(...compared.citations);
+      await emit(hooks?.onSources, compared.citations);
       claimUpdates.push(...compared.claimUpdates);
       recheck = { status: compared.status, verdicts: compared.verdicts };
       sawSearch = true;
@@ -325,7 +401,8 @@ export async function answerQuestion(
       if (compared.tokenOut !== null) {
         tokenOut = (tokenOut ?? 0) + compared.tokenOut;
       }
-      steps.push({
+      await addBlock("recheck", compared.text);
+      await recordStep({
         action: "recheck",
         status: compared.status,
         detail: compared.detail,
@@ -334,8 +411,19 @@ export async function answerQuestion(
     }
 
     sawSearch = true;
-    const result = await runSearch(step, input, deps, citations.length);
-    parts.push(result.text);
+    const index = parts.length;
+    parts.push("");
+    const result = await runSearch(step, input, deps, citations.length, index);
+    parts[index] = result.text;
+
+    if (!result.streamed) {
+      await emit(hooks?.onBlock, {
+        index,
+        kind: "search",
+        text: result.text,
+      });
+    }
+
     citations.push(...result.citations);
     if (result.model !== null) {
       model = result.model;
@@ -347,7 +435,7 @@ export async function answerQuestion(
       tokenOut = (tokenOut ?? 0) + result.tokenOut;
     }
     allGrounded = allGrounded && result.grounded;
-    steps.push({
+    await recordStep({
       action: "search",
       status: "done",
       detail: `${result.citations.length} source(s)`,

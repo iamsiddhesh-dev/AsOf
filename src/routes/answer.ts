@@ -1,13 +1,16 @@
 import { Hono, type Context } from "hono";
+import { streamSSE } from "hono/streaming";
 import { answerQuestion, type AnswerResult } from "../answer/answer.js";
-import { extractClaims, type ClaimExtractionResult } from "../claims/extract.js";
-import { applyClaimUpdates } from "../recheck/compare.js";
+import {
+  appendQuestion,
+  persistAnswer,
+  type PersistedAnswer,
+} from "../answer/persist.js";
 import { config } from "../config.js";
 import {
-  appendTurn,
   getConversation,
   getTurn,
-  setTurnClaimsStatus,
+  type Conversation,
 } from "../conversations/repository.js";
 import type { Db } from "../db/index.js";
 import { countClaims } from "../ledger/claims.js";
@@ -16,7 +19,7 @@ import {
   type ChatClient,
   type SearchClient,
 } from "../providers/types.js";
-import { classify } from "../router/classify.js";
+import { classify, type RouteDecision } from "../router/classify.js";
 import { requestTimezone } from "./timezone.js";
 
 type JsonObject = Record<string, unknown>;
@@ -49,6 +52,140 @@ function nonEmptyString(value: unknown): string | null {
     : null;
 }
 
+type Prepared = {
+  ok: true;
+  conversation: Conversation;
+  text: string;
+  keyword: string | null;
+  timezone: string;
+  now: Date;
+  decision: RouteDecision;
+  search: SearchClient;
+  chat: ChatClient;
+};
+
+type Rejected = { ok: false; response: Response };
+
+/**
+ * Everything both endpoints need before the plan runs: a valid body, a
+ * timezone, configured providers, and a routing decision. Kept in one place so
+ * a streamed answer cannot be validated differently from a JSON one.
+ */
+async function prepare(
+  c: Context,
+  db: Db,
+  options: {
+    clock: () => Date;
+    search: SearchClient | null;
+    chat: ChatClient | null;
+  },
+): Promise<Prepared | Rejected> {
+  const conversation = getConversation(db, c.req.param("id") ?? "");
+  if (conversation === null) {
+    return { ok: false, response: c.json({ error: "conversation not found" }, 404) };
+  }
+
+  const body = await readJson(c);
+  if (body === null) {
+    return {
+      ok: false,
+      response: c.json({ error: "body must be a json object" }, 400),
+    };
+  }
+
+  const text = nonEmptyString(body["text"]);
+  if (text === null) {
+    return {
+      ok: false,
+      response: c.json({ error: "text must be a non-empty string" }, 400),
+    };
+  }
+  if (text.length > 2_000) {
+    return { ok: false, response: c.json({ error: "text is too long" }, 400) };
+  }
+
+  const keywordValue = body["keyword"];
+  if (
+    keywordValue !== undefined &&
+    keywordValue !== null &&
+    typeof keywordValue !== "string"
+  ) {
+    return {
+      ok: false,
+      response: c.json({ error: "keyword must be a string" }, 400),
+    };
+  }
+  const keyword = nonEmptyString(keywordValue);
+  if (keyword !== null && keyword.length > 100) {
+    return { ok: false, response: c.json({ error: "keyword is too long" }, 400) };
+  }
+
+  const timezone = requestTimezone(c, conversation.timezone);
+  if (timezone === null) {
+    return { ok: false, response: c.json({ error: "invalid timezone" }, 400) };
+  }
+
+  const missing: string[] = [];
+  if (options.chat === null) {
+    missing.push("LLM_API_KEY");
+  }
+  if (options.search === null) {
+    missing.push("TAVILY_API_KEY");
+  }
+  if (options.chat === null || options.search === null) {
+    return {
+      ok: false,
+      response: c.json(
+        {
+          error: "providers are not configured",
+          missing,
+          hint: "run npm run doctor",
+        },
+        503,
+      ),
+    };
+  }
+
+  const now = options.clock();
+  const lastAnswerAt =
+    conversation.state.lastAnswerTurnId === null
+      ? null
+      : getTurn(db, conversation.state.lastAnswerTurnId)?.createdAt ?? null;
+
+  const decision = classify({
+    text,
+    now,
+    timezone,
+    state: conversation.state,
+    lastAnswerAt,
+    priorClaimCount: countClaims(db),
+  });
+
+  return {
+    ok: true,
+    conversation,
+    text,
+    keyword,
+    timezone,
+    now,
+    decision,
+    search: options.search,
+    chat: options.chat,
+  };
+}
+
+function retryableStatus(status: number | null): boolean {
+  return status !== null && (status === 408 || status === 429 || status >= 500);
+}
+
+/** Thrown when the SSE socket has gone away, so the work can stop early. */
+class StreamClosed extends Error {
+  constructor() {
+    super("client disconnected");
+    this.name = "StreamClosed";
+  }
+}
+
 /**
  * Ask writes the question, runs the plan, and writes the answer. The ledger is
  * the product, so an answer that only exists in a response body has not
@@ -64,85 +201,12 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
   const extractModel = options.extractModel ?? config.model.fast.model;
 
   router.post("/:id/ask", async (c) => {
-    const conversation = getConversation(db, c.req.param("id"));
-    if (conversation === null) {
-      return c.json({ error: "conversation not found" }, 404);
+    const prepared = await prepare(c, db, { clock, search, chat });
+    if (!prepared.ok) {
+      return prepared.response;
     }
 
-    const body = await readJson(c);
-    if (body === null) {
-      return c.json({ error: "body must be a json object" }, 400);
-    }
-
-    const text = nonEmptyString(body["text"]);
-    if (text === null) {
-      return c.json({ error: "text must be a non-empty string" }, 400);
-    }
-    if (text.length > 2_000) {
-      return c.json({ error: "text is too long" }, 400);
-    }
-
-    const keywordValue = body["keyword"];
-    if (
-      keywordValue !== undefined &&
-      keywordValue !== null &&
-      typeof keywordValue !== "string"
-    ) {
-      return c.json({ error: "keyword must be a string" }, 400);
-    }
-    const keyword = nonEmptyString(keywordValue);
-    if (keyword !== null && keyword.length > 100) {
-      return c.json({ error: "keyword is too long" }, 400);
-    }
-
-    const timezone = requestTimezone(c, conversation.timezone);
-    if (timezone === null) {
-      return c.json({ error: "invalid timezone" }, 400);
-    }
-
-    const missing: string[] = [];
-    if (chat === null) {
-      missing.push("LLM_API_KEY");
-    }
-    if (search === null) {
-      missing.push("TAVILY_API_KEY");
-    }
-    if (chat === null || search === null) {
-      return c.json(
-        {
-          error: "providers are not configured",
-          missing,
-          hint: "run npm run doctor",
-        },
-        503,
-      );
-    }
-
-    const now = clock();
-    const lastAnswerAt =
-      conversation.state.lastAnswerTurnId === null
-        ? null
-        : getTurn(db, conversation.state.lastAnswerTurnId)?.createdAt ?? null;
-
-    const decision = classify({
-      text,
-      now,
-      timezone,
-      state: conversation.state,
-      lastAnswerAt,
-      priorClaimCount: countClaims(db),
-    });
-
-    const userTurnInput = {
-      conversationId: conversation.id,
-      role: "user" as const,
-      content: text,
-      createdAt: now.toISOString(),
-      resolvedStart: decision.timeRange?.start ?? null,
-      resolvedEnd: decision.timeRange?.end ?? null,
-      resolvedLabel: decision.timeRange?.label ?? null,
-      intent: decision.intent,
-    };
+    const { conversation, text, keyword, timezone, now, decision } = prepared;
 
     // Answer before writing: "nothing has been stored yet" must describe the
     // ledger as it was before this question, not after it.
@@ -150,7 +214,7 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
     try {
       result = await answerQuestion(
         db,
-        { search, chat, model, extractChat, extractModel },
+        { search: prepared.search, chat: prepared.chat, model, extractChat, extractModel },
         {
           text,
           timezone,
@@ -162,7 +226,12 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
       );
     } catch (error) {
       const providerError = error instanceof ProviderError ? error : null;
-      const userTurn = appendTurn(db, userTurnInput);
+      const userTurn = appendQuestion(db, {
+        conversationId: conversation.id,
+        text,
+        decision,
+        now,
+      });
       return c.json(
         {
           error: (error as Error).message,
@@ -174,120 +243,149 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
       );
     }
 
-    const userTurn = appendTurn(db, userTurnInput);
-
-    const assistantTurn = appendTurn(db, {
-      conversationId: conversation.id,
-      role: "assistant",
-      content: result.answer,
-      createdAt: clock().toISOString(),
-      parentTurnId: userTurn.id,
-      intent: decision.intent,
-      model: result.model,
-      latencyMs: result.latencyMs,
-      tokenIn: result.tokenIn,
-      tokenOut: result.tokenOut,
-    });
-
-    /**
-     * A grounding answer gets its claims from extraction. A claims-mode recheck
-     * already compared and wrote what it found, so extracting the same answer
-     * again would only duplicate the claims it just superseded.
-     */
-    let claims: ClaimExtractionResult = {
-      inserted: 0,
-      superseded: 0,
-      dropped: 0,
-      reason: null,
-    };
-    let claimsStatus: "done" | "failed" | "skipped" = "skipped";
-
-    if (result.recheck !== null) {
-      let applyError: string | null = null;
-
-      if (result.claimUpdates.length > 0) {
-        try {
-          const applied = applyClaimUpdates(db, result.claimUpdates, {
-            turnId: assistantTurn.id,
-            conversationId: conversation.id,
-            now: clock(),
-          });
-          claims = {
-            inserted: applied.inserted,
-            superseded: applied.superseded,
-            dropped: 0,
-            reason: null,
-          };
-        } catch (error) {
-          applyError = (error as Error).message;
-        }
-      }
-
-      if (applyError !== null) {
-        claims = { ...claims, reason: applyError };
-        claimsStatus = "failed";
-      } else if (result.recheck.status === "done") {
-        claimsStatus = "done";
-      } else {
-        claims = {
-          ...claims,
-          reason: "recheck did not compare any claims",
-        };
-      }
-    } else if (result.grounded === true && result.citations.length > 0) {
-      if (extractChat === null) {
-        claims = {
-          inserted: 0,
-          superseded: 0,
-          dropped: 0,
-          reason: "extraction provider is not configured",
-        };
-        claimsStatus = "failed";
-      } else {
-        try {
-          claims = await extractClaims(
-            db,
-            { chat: extractChat, model: extractModel },
-            {
-              answer: result.answer,
-              sources: result.citations,
-              turnId: assistantTurn.id,
-              conversationId: conversation.id,
-              now: clock(),
-              provider: search.name,
-            },
-          );
-          claimsStatus = "done";
-        } catch (error) {
-          claims = {
-            inserted: 0,
-            superseded: 0,
-            dropped: 0,
-            reason: (error as Error).message,
-          };
-          claimsStatus = "failed";
-        }
-      }
-    } else {
-      claims = {
-        inserted: 0,
-        superseded: 0,
-        dropped: 0,
-        reason: "answer was not grounded",
-      };
-    }
-
-    setTurnClaimsStatus(db, assistantTurn.id, claimsStatus);
+    const persisted: PersistedAnswer = await persistAnswer(
+      db,
+      result,
+      { conversationId: conversation.id, text, decision, now },
+      {
+        clock,
+        searchProvider: prepared.search.name,
+        extractChat,
+        extractModel,
+      },
+    );
 
     const { claimUpdates: _claimUpdates, ...publicResult } = result;
     void _claimUpdates;
 
     return c.json({
       ...publicResult,
-      claims,
+      claims: persisted.claims,
+      claimsStatus: persisted.claimsStatus,
       decision,
-      userTurnId: userTurn.id,
-      assistantTurnId: assistantTurn.id,
+      userTurnId: persisted.userTurn.id,
+      assistantTurnId: persisted.assistantTurn.id,
+    });
+  });
+
+  /**
+   * The same plan, reported as it runs. Recall and recheck arrive as whole
+   * `block` events because they are reads, not generation; only model
+   * synthesis streams, as `delta` events keyed by the part they belong to.
+   * Concatenating the blocks and deltas in order, separated by a blank line,
+   * reproduces `done.answer`.
+   */
+  router.post("/:id/ask/stream", async (c) => {
+    const prepared = await prepare(c, db, { clock, search, chat });
+    if (!prepared.ok) {
+      return prepared.response;
+    }
+
+    const { conversation, text, keyword, timezone, now, decision } = prepared;
+    const persistInput = {
+      conversationId: conversation.id,
+      text,
+      decision,
+      now,
+    };
+
+    return streamSSE(c, async (stream) => {
+      let closed = false;
+      stream.onAbort(() => {
+        closed = true;
+      });
+
+      const send = async (event: string, data: unknown): Promise<void> => {
+        if (closed) {
+          throw new StreamClosed();
+        }
+        await stream.writeSSE({ event, data: JSON.stringify(data) });
+      };
+
+      try {
+        await send("decision", {
+          intent: decision.intent,
+          confidence: decision.confidence,
+          timeRange: decision.timeRange,
+          blockedBy: decision.blockedBy,
+          steps: decision.steps,
+        });
+
+        const result = await answerQuestion(
+          db,
+          {
+            search: prepared.search,
+            chat: prepared.chat,
+            model,
+            extractChat,
+            extractModel,
+          },
+          {
+            text,
+            timezone,
+            now,
+            decision,
+            state: conversation.state,
+            keyword,
+            hooks: {
+              onStepStart: (action) => send("step", { action, status: "running" }),
+              onStep: (step) => send("step", step),
+              onSources: (citations) => send("sources", { citations }),
+              onBlock: (block) => send("block", block),
+              onDelta: (index, delta) =>
+                send("delta", { index, text: delta }),
+            },
+          },
+        );
+
+        // Turns are written on completion, not at the start of the stream.
+        // A half-written assistant turn would be readable by recall and would
+        // make `lastAnswerTurnId` point at an answer nobody finished.
+        const persisted = await persistAnswer(db, result, persistInput, {
+          clock,
+          searchProvider: prepared.search.name,
+          extractChat,
+          extractModel,
+        });
+
+        const { claimUpdates: _claimUpdates, ...publicResult } = result;
+        void _claimUpdates;
+
+        await send("done", {
+          ...publicResult,
+          claims: persisted.claims,
+          claimsStatus: persisted.claimsStatus,
+          decision,
+          userTurnId: persisted.userTurn.id,
+          assistantTurnId: persisted.assistantTurn.id,
+        });
+      } catch (error) {
+        if (closed || error instanceof StreamClosed) {
+          return;
+        }
+
+        const providerError = error instanceof ProviderError ? error : null;
+
+        // The question was asked, so it is recorded even though no answer was.
+        let userTurnId: string | null = null;
+        try {
+          userTurnId = appendQuestion(db, persistInput).id;
+        } catch {
+          userTurnId = null;
+        }
+
+        try {
+          await send("error", {
+            message: (error as Error).message,
+            provider: providerError?.provider ?? null,
+            status: providerError?.status ?? null,
+            retryable: retryableStatus(providerError?.status ?? null),
+            userTurnId,
+          });
+        } catch {
+          // The socket is gone; there is nowhere left to report to.
+        }
+      }
     });
   });
 
