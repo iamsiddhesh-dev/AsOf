@@ -167,7 +167,7 @@ export function conversationRoutes(
             timezone: conversation.timezone,
             state: conversation.state,
             lastAnswerAt,
-            priorClaimCount: countClaims(db, conversation.id),
+            priorClaimCount: countClaims(db),
           })
         : null;
 
@@ -214,7 +214,7 @@ export function conversationRoutes(
         timezone: conversation.timezone,
         state: conversation.state,
         lastAnswerAt,
-        priorClaimCount: countClaims(db, conversation.id),
+        priorClaimCount: countClaims(db),
       }),
     );
   });

@@ -79,6 +79,8 @@ A message may produce several steps. Compound questions are normal:
 
 `recheck` carries a `mode`: `claims` diffs stored claims, `news` looks for dated launches or announcements after the anchor. `clarify` carries a `blockedBy` reason (`no_prior_answer`, `no_entity_set`, `unresolved_date`) so a missing precondition is visible instead of guessed.
 
+Claims are counted across the whole ledger, not one conversation, for the same reason recall is: "has it changed?" is a question about everything you have stored.
+
 Date resolution is not hardcoded. `yesterday` is computed from the current time in the conversation's timezone, so on 15 November 2026 in `Asia/Kolkata` it resolves to the local day of 14 November. The browser can override the timezone per request with an `x-timezone` header.
 
 ## What works today
@@ -95,6 +97,26 @@ Date resolution is not hardcoded. `yesterday` is computed from the current time 
 - No streaming, no UI.
 
 The README says this because an agent that overstates its own state is the failure mode this project exists to avoid.
+
+## Eval
+
+```bash
+npm run eval
+```
+
+Twelve cases run against a fresh ledger on a faked clock, in a temporary database. Each case seeds history, asks the question in a **new conversation**, and checks two things separately:
+
+- **plan** — did the router produce the right steps, mode, date range, and blocked reason?
+- **answer** — did the reply contain the right turns, or the right honest refusal?
+
+```text
+plan    12/12
+answer  5/5   (7 case(s) plan-only)
+```
+
+A plan failure exits non-zero, because routing regressions are silent otherwise. `plan-only` cases are the lanes whose answer path is not built: `recheck` and `search`. The harness prints them instead of skipping them, so the gap is visible rather than averaged away.
+
+The eval seeds every question in a new conversation on purpose. If recall or recheck were scoped to the current conversation, these cases would fail.
 
 ## Branches
 

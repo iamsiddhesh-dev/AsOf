@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.build.json && node scripts/copy-migrations.mjs",
     "start": "node dist/server.js",
     "db:migrate": "tsx src/db/migrate-cli.ts",
+    "eval": "tsx eval/run.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
