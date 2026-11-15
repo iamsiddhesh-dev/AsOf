@@ -46,6 +46,11 @@ export type ChatRequest = {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  /**
+   * Reasoning models spend completion tokens thinking before they answer. A
+   * JSON extraction needs the budget for the JSON, not for an essay about it.
+   */
+  reasoningEffort?: "low" | "medium" | "high";
 };
 
 export type ChatUsage = {

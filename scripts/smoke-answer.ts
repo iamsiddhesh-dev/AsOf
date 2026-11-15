@@ -27,6 +27,12 @@ type AskBody = {
   grounded?: boolean | null;
   citations?: Array<{ id: string; title: string; url: string }>;
   steps?: Array<{ action: string; status: string; detail: string }>;
+  claims?: {
+    inserted: number;
+    superseded: number;
+    dropped: number;
+    reason: string | null;
+  };
   model?: string | null;
   latencyMs?: number;
   error?: string;
@@ -90,6 +96,12 @@ try {
     console.log(
       `ledger    ${turns.length} turn(s): ${turns.map((turn) => turn.role).join(", ")}`,
     );
+    const claims = body.claims;
+    if (claims !== undefined) {
+      console.log(
+        `claims    ${claims.inserted} stored, ${claims.superseded} superseded, ${claims.dropped} dropped${claims.reason === null ? "" : ` (${claims.reason})`}`,
+      );
+    }
     console.log("");
 
     if (body.grounded !== true) {

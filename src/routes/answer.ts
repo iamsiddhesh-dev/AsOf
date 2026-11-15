@@ -1,10 +1,12 @@
 import { Hono, type Context } from "hono";
-import { answerQuestion } from "../answer/answer.js";
+import { answerQuestion, type AnswerResult } from "../answer/answer.js";
+import { extractClaims, type ClaimExtractionResult } from "../claims/extract.js";
 import { config } from "../config.js";
 import {
   appendTurn,
   getConversation,
   getTurn,
+  setTurnClaimsStatus,
 } from "../conversations/repository.js";
 import type { Db } from "../db/index.js";
 import { countClaims } from "../ledger/claims.js";
@@ -22,7 +24,11 @@ export type AnswerRouteOptions = {
   clock?: () => Date;
   search?: SearchClient | null;
   chat?: ChatClient | null;
+  /** Defaults to `chat`; production passes the fast provider's client. */
+  extractChat?: ChatClient | null;
   model?: string;
+  /** Claims are extraction, not synthesis, so they use the fast model. */
+  extractModel?: string;
 };
 
 async function readJson(c: Context): Promise<JsonObject | null> {
@@ -52,7 +58,9 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
   const clock = options.clock ?? (() => new Date());
   const search = options.search ?? null;
   const chat = options.chat ?? null;
+  const extractChat = options.extractChat ?? chat;
   const model = options.model ?? config.model.main.model;
+  const extractModel = options.extractModel ?? config.model.fast.model;
 
   router.post("/:id/ask", async (c) => {
     const conversation = getConversation(db, c.req.param("id"));
@@ -135,37 +143,16 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
       intent: decision.intent,
     };
 
+    // Answer before writing: "nothing has been stored yet" must describe the
+    // ledger as it was before this question, not after it.
+    let result: AnswerResult;
     try {
-      // Answer before writing: "nothing has been stored yet" must describe the
-      // ledger as it was before this question, not after it.
-      const result = await answerQuestion(db, { search, chat, model }, {
+      result = await answerQuestion(db, { search, chat, model }, {
         text,
         timezone,
         now,
         decision,
         keyword,
-      });
-
-      const userTurn = appendTurn(db, userTurnInput);
-
-      const assistantTurn = appendTurn(db, {
-        conversationId: conversation.id,
-        role: "assistant",
-        content: result.answer,
-        createdAt: clock().toISOString(),
-        parentTurnId: userTurn.id,
-        intent: decision.intent,
-        model: result.model,
-        latencyMs: result.latencyMs,
-        tokenIn: result.tokenIn,
-        tokenOut: result.tokenOut,
-      });
-
-      return c.json({
-        ...result,
-        decision,
-        userTurnId: userTurn.id,
-        assistantTurnId: assistantTurn.id,
       });
     } catch (error) {
       const providerError = error instanceof ProviderError ? error : null;
@@ -180,6 +167,79 @@ export function answerRoutes(db: Db, options: AnswerRouteOptions = {}) {
         providerError === null ? 500 : 502,
       );
     }
+
+    const userTurn = appendTurn(db, userTurnInput);
+
+    const assistantTurn = appendTurn(db, {
+      conversationId: conversation.id,
+      role: "assistant",
+      content: result.answer,
+      createdAt: clock().toISOString(),
+      parentTurnId: userTurn.id,
+      intent: decision.intent,
+      model: result.model,
+      latencyMs: result.latencyMs,
+      tokenIn: result.tokenIn,
+      tokenOut: result.tokenOut,
+    });
+
+    /**
+     * Only a grounded answer has evidence worth extracting from. A failed
+     * extraction is recorded on the turn, not raised: the answer the user
+     * already has is still valid, it simply has no claims to recheck yet.
+     */
+    let claims: ClaimExtractionResult;
+    if (result.grounded === true && result.citations.length > 0) {
+      if (extractChat === null) {
+        setTurnClaimsStatus(db, assistantTurn.id, "failed");
+        claims = {
+          inserted: 0,
+          superseded: 0,
+          dropped: 0,
+          reason: "extraction provider is not configured",
+        };
+      } else {
+        try {
+          claims = await extractClaims(
+            db,
+            { chat: extractChat, model: extractModel },
+            {
+              answer: result.answer,
+              sources: result.citations,
+              turnId: assistantTurn.id,
+              conversationId: conversation.id,
+              now: clock(),
+              provider: search.name,
+            },
+          );
+          setTurnClaimsStatus(db, assistantTurn.id, "done");
+        } catch (error) {
+          setTurnClaimsStatus(db, assistantTurn.id, "failed");
+          claims = {
+            inserted: 0,
+            superseded: 0,
+            dropped: 0,
+            reason: (error as Error).message,
+          };
+        }
+      }
+    } else {
+      setTurnClaimsStatus(db, assistantTurn.id, "skipped");
+      claims = {
+        inserted: 0,
+        superseded: 0,
+        dropped: 0,
+        reason: "answer was not grounded",
+      };
+    }
+
+    return c.json({
+      ...result,
+      claims,
+      decision,
+      userTurnId: userTurn.id,
+      assistantTurnId: assistantTurn.id,
+    });
   });
 
   return router;
