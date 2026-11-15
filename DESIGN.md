@@ -43,7 +43,7 @@ produce claims that are worth trusting, and to show the work when they are not.
 | Streaming answer (`/ask/stream`) | works | `src/routes/answer.ts` |
 | News recheck ("has anything shipped since?") | **not built** — says so | `not_built` step |
 | Entity-set population ("any of them") | **not built** — asks | `blockedBy: no_entity_set` |
-| Frontend | **not built** | next slice |
+| Web client (Reader, Ledger, Inspector) | works | `web/` |
 
 The honest-refusal rows are not gaps in the demo. They are the design: the
 agent has a vocabulary for *not knowing*, and uses it.
@@ -395,15 +395,19 @@ The reference list maps to product surfaces, not decoration:
 That produces three views, not a chat clone:
 
 1. **Reader** — the conversation as a document timeline in a ~68-character
-   column. Turns are not bubbles. Each answer carries a receipt line: intent,
-   steps, model, latency, `grounded`. Citations sit in the margin; clicking one
-   opens its quoted snippet.
-2. **Inspector** — source detail for an `[sN]`, and claim history for a subject:
-   value, `active` / `superseded`, observed date, quote, and the supersession
-   link.
+   column. Turns are not bubbles. A question is a labelled block with its
+   timestamp; an answer is prose. Citations are superscript buttons in the text,
+   with an evidence strip under the answer. The receipt line reports intent,
+   resolved window, source count, `grounded`, model, latency, and claim outcome;
+   the per-step list is shown while the answer is live.
+2. **Inspector** — source detail for an `[sN]`: title, domain, published and
+   fetched dates, the quoted snippet, a link to the page. Or claim detail:
+   value, status, observed date, confidence, quote, source, and the
+   supersession chain oldest-first.
 3. **Ledger** — claims as primary objects: subject, attribute, current value,
-   previous value, status, observed date. This is the Elicit/Kagi/Wayback view,
-   and it is the one that makes the product look like an instrument.
+   status, observed date, source domain, with status and subject filters. The
+   previous value is one click away in the Inspector, because a table that shows
+   history inline is a table nobody scans.
 
 The header always shows the ledger clock and timezone, because time is the
 premise.
@@ -413,10 +417,33 @@ no sparkle icons, no chat bubbles, no generic hero. Typography, rules, and
 whitespace do the work. Density is moderate: the reader is comfortable at length
 because this is meant to be used daily, not screenshot once.
 
-Not built yet. The read APIs it needs now exist: `GET /api/ledger/claims`,
-`GET /api/ledger/claims/:id` for the supersession chain, `GET
-/api/ledger/subjects`, and per-turn citations from `turn_sources` included in
-`GET /:id/turns`. The next slice is the frontend itself.
+### What the client owns
+
+The client is React and plain CSS, with no state library. That is a decision
+about where truth lives: the ledger is the only copy of the record, and a second
+copy in a browser store would be a stale duplicate with a delete button.
+
+- **It derives two things.** `grounded` for a reopened answer is recomputed from
+  the stored text and stored citations with the server's rule — an `[sN]` must
+  match a returned source. The resolved window comes from the turn. Everything
+  else on the receipt was written by the server.
+- **It reads the stream, not a summary of it.** `fetch` plus a `ReadableStream`
+  parser, because `EventSource` cannot POST. Frames are buffered across TCP
+  reads; `block` text and `delta` tokens are placed by part index; `done` is the
+  body `/ask` would have returned. On `error`, the partial answer is discarded
+  with the plan and the notice says so.
+- **It uses the server's clock.** `/health` reports the ledger's `time`; the
+  client measures the skew once and ticks from it, so a `FAKE_NOW` demo shows
+  the same day in the header and in recall. Formatting is always in the
+  conversation's timezone.
+- **It is same-origin in both modes.** Vite proxies `/api` and `/health` during
+  development; in production the API serves `web/dist` and falls back to
+  `index.html` for client routes, while leaving `/api/*` 404s as JSON.
+
+One gap is deliberately visible instead of faked: steps and `grounded` are
+session-only, because `turns` does not store them. The receipt prints what the
+row actually has, and the live step list disappears on reload rather than being
+reconstructed from a plausible guess.
 
 ---
 

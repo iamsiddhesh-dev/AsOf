@@ -1,4 +1,6 @@
 import { serve } from "@hono/node-server";
+import fs from "node:fs";
+import path from "node:path";
 import { createApp } from "./app.js";
 import { config, missingKeys } from "./config.js";
 import { openDatabase } from "./db/index.js";
@@ -12,7 +14,7 @@ const clock =
     ? () => new Date()
     : () => new Date(config.fakeNow as string);
 
-const app = createApp(db, { clock });
+const app = createApp(db, { clock, ui: true });
 
 const server = serve(
   {
@@ -21,6 +23,12 @@ const server = serve(
   },
   (info) => {
     console.log(`asof listening on http://localhost:${info.port}`);
+    const uiIndex = path.join(process.cwd(), "web", "dist", "index.html");
+    console.log(
+      fs.existsSync(uiIndex)
+        ? `ui:       http://localhost:${info.port}`
+        : "ui:       not built — run npm run build:ui",
+    );
     console.log(`database: ${config.databasePath}`);
     const missing = missingKeys();
     if (missing.length > 0) {

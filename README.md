@@ -14,13 +14,23 @@ The architecture argument — what is stored, why, and what is deliberately not 
 
 ```bash
 npm install
+npm --prefix web install
 Copy-Item .env.example .env   # then fill LLM_API_KEY and TAVILY_API_KEY
 npm run doctor                # keys present, key matches provider, model served
 npm run db:migrate
 npm run dev
 ```
 
-The service starts on `http://localhost:8787` by default.
+`npm run dev` starts both processes: the API on `http://localhost:8787` and the Vite client on `http://localhost:5173`. The client proxies `/api` and `/health` to the API, so there is no CORS configuration and no second base URL in the browser code.
+
+For a single-process build:
+
+```bash
+npm run build:all   # server to dist/, client to web/dist/
+npm start           # serves the API and the built UI on :8787
+```
+
+`npm run dev:api` runs the API alone. `npm run build:api` and `npm run build:ui` build the halves separately.
 
 `npm run doctor` is the first stop when something fails. It reports which keys `.env` loaded, whether the key's prefix belongs to the provider its base URL points at, and whether that provider actually serves the configured model — without spending a token or a search credit. Model IDs move; this catches the dead ID before a request does.
 
@@ -236,6 +246,28 @@ ledger    2 turn(s): user, assistant
 claims    4 stored, 0 superseded, 0 dropped
 ```
 
+## Client
+
+The client is React, Vite, TypeScript, and plain CSS. No component library, no CSS framework, no state library: the interesting state is in the ledger, and a second copy of it in the browser would be a liability.
+
+Three views, because there are three questions a reader actually asks:
+
+| View | Question | What it shows |
+|---|---|---|
+| **Reader** | what was asked, and what came back? | a conversation as a document column, not chat bubbles. Each answer carries its citations, an evidence strip, and a receipt: intent, resolved window, sources, grounded, model, latency, claim outcome, per-step status. |
+| **Ledger** | what does this ledger stand behind? | claims as rows: subject, attribute, value, status, observed date, source domain, with status and subject filters and a subject index. |
+| **Inspector** | why should I believe this? | clicking an `[sN]` opens the exact snippet the model was allowed to quote. Clicking a claim opens its quote, source, conversation, and supersession chain oldest-first. |
+
+The citation marker is the seam between the views: an `[sN]` is a button, not decoration. A marker that does not match a returned source is rendered as inert text, never as a link.
+
+The client speaks the same SSE endpoint the smoke test does. It buffers frames across TCP reads, renders `block` text and `delta` tokens by part index, and settles on the stored answer when `done` arrives. If the stream fails, the partial text is discarded with the plan, and the notice says the question may have been recorded but the answer was not.
+
+Two facts are derived rather than stored. A reopened answer's `grounded` flag is recomputed from its content and stored citations using the server's rule. The resolved date window is read from the turn. Everything else on the receipt was written by the server.
+
+Time is shown, not hidden: the header clock is the **server's** clock (drift-corrected against `/health`, so `FAKE_NOW` agrees with the UI), and every date is formatted in the conversation's timezone. "Today" and "Yesterday" in the rail are computed in that zone.
+
+The UI is light mode only and deliberately quiet: serif reading text, monospaced metadata, hairlines instead of cards, no gradients, no glass, no sparkle icons. It is meant to be used daily, not screenshotted once.
+
 ## What works today
 
 - Persistence, migrations, FTS5, health and ledger stats.
@@ -249,13 +281,15 @@ claims    4 stored, 0 superseded, 0 dropped
 - A streaming endpoint that reports the decision, each step, sources, and real model tokens as they arrive, then persists both turns on completion.
 - Durable per-turn citations (`turn_sources`), so a reopened answer keeps its footnotes.
 - A read-only ledger API: claim list with evidence, supersession history, and a subject index.
+- A React client with three views: the Reader (a conversation as a document), the Ledger (claims as rows), and the Inspector (the cited snippet or a claim's supersession chain).
 - Deterministic eval coverage of the answer path through injected fixtures.
 
 ## What does not work yet
 
 - News rechecks (`has any of them shipped something?`) still return `not_built`. Only dated claims and announcements would make that lane honest.
 - No entity-set population, so "any of them" usually asks for the referent first.
-- No frontend yet. The API is the only client.
+- The UI has no offline cache: it is served by the local API, and the data never leaves the machine, but the page itself needs the server.
+- Steps and the grounded flag are not stored on the turn. History still shows the intent, model, latency, sources, and claim outcome; `grounded` for a reopened answer is recomputed with the same rule the server uses (an `[sN]` must match a stored citation), and the live step list is session-only.
 - Claim extraction is only as good as the extraction prompt: claims the model omits are not recovered, and `dropped` counts rejected claims rather than explaining each one.
 - A recheck compares against a fresh open-web search, not a dated archive. `unchanged` means "the current sources still say this", not "this was true continuously since yesterday".
 
