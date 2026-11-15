@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { config } from "./config.js";
 import type { Db } from "./db/index.js";
@@ -17,6 +20,12 @@ export type AppOptions = {
   extractChat?: ChatClient | null;
   model?: string;
   extractModel?: string;
+  /**
+   * Serve the built UI from this process. Off by default: tests create the app
+   * without a build on disk, and an SPA fallback would swallow their 404s.
+   */
+  ui?: boolean;
+  uiDir?: string;
 };
 
 const LEDGER_TABLES = [
@@ -82,6 +91,36 @@ export function createApp(db: Db, options: AppOptions = {}) {
   }));
   app.route("/api/memory", memoryRoutes(db, options));
   app.route("/api/demo", demoRoutes(db, options));
+
+  if (options.ui === true) {
+    const uiDir = path.resolve(
+      options.uiDir ?? path.join(process.cwd(), "web", "dist"),
+    );
+    const indexPath = path.join(uiDir, "index.html");
+
+    if (fs.existsSync(indexPath)) {
+      // Hashed assets and any other real file. Requests that find nothing call
+      // next(), so a client-side route falls through to the document below.
+      app.use("/*", serveStatic({ root: uiDir }));
+
+      app.get("*", (c, next) => {
+        // The API keeps JSON 404s: only a browser navigation gets the app.
+        if (c.req.path.startsWith("/api/")) {
+          return next();
+        }
+        // A missing asset is a 404, not a document. Falling back here would
+        // return HTML with a JS content type for a stale bundle and hide the
+        // real problem behind a syntax error in the console.
+        if (/\.[a-z0-9]+$/i.test(c.req.path)) {
+          return next();
+        }
+        return serveStatic({
+          root: uiDir,
+          rewriteRequestPath: () => "/index.html",
+        })(c, next);
+      });
+    }
+  }
 
   return app;
 }

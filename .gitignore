@@ -49,3 +49,6 @@ node_modules/
 /dist/
 /build/
 *.log
+
+# Built web client
+/web/dist/
