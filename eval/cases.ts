@@ -19,10 +19,13 @@ export type Seed =
     };
 
 export type ExpectedAnswer = {
-  found: boolean;
+  /** Substrings the answer must contain, case-insensitive. */
   contains?: string[];
-  message?: RegExp;
+  /** For honest refusals, where the exact phrasing is the behaviour. */
+  matches?: RegExp;
   demo?: boolean;
+  grounded?: boolean;
+  minCitations?: number;
 };
 
 export type EvalCase = {
@@ -56,7 +59,7 @@ export const CASES: EvalCase[] = [
     expect: {
       steps: ["recall"],
       rangeLabel: "14 November 2026",
-      answer: { found: true, contains: ["CRM tools"], demo: true },
+      answer: { contains: ["CRM tools"], demo: true },
     },
   },
   {
@@ -66,7 +69,7 @@ export const CASES: EvalCase[] = [
     expect: {
       steps: ["recall"],
       rangeLabel: "3 November 2026",
-      answer: { found: false, message: /nothing has been stored/i },
+      answer: { matches: /nothing has been stored/i },
     },
   },
   {
@@ -83,7 +86,7 @@ export const CASES: EvalCase[] = [
     },
     expect: {
       steps: ["recall"],
-      answer: { found: false, message: /memory starts 9 November 2026/i },
+      answer: { matches: /memory starts 9 November 2026/i },
     },
   },
   {
@@ -106,7 +109,6 @@ export const CASES: EvalCase[] = [
     expect: {
       steps: ["recall"],
       answer: {
-        found: true,
         contains: ["CRM tools", "managed Postgres"],
       },
     },
@@ -152,25 +154,40 @@ export const CASES: EvalCase[] = [
     id: "search-factual",
     question: "what is hubspot starter pricing?",
     seed: "empty",
-    expect: { steps: ["search"] },
+    expect: {
+      steps: ["search"],
+      answer: {
+        contains: ["HubSpot Starter", "20 USD"],
+        grounded: true,
+        minCitations: 1,
+      },
+    },
   },
   {
     id: "clarify-pronoun-without-set",
     question: "has any of them changed pricing?",
     seed: "empty",
-    expect: { steps: [], blockedBy: "no_entity_set" },
+    expect: {
+      steps: [],
+      blockedBy: "no_entity_set",
+      answer: { matches: /Name the tools or topics/i },
+    },
   },
   {
     id: "clarify-stale-recheck",
     question: "is that still true?",
     seed: "empty",
-    expect: { steps: [], blockedBy: "no_prior_answer" },
+    expect: {
+      steps: [],
+      blockedBy: "no_prior_answer",
+      answer: { matches: /don't have a previous answer/i },
+    },
   },
   {
     id: "meta-greeting",
     question: "hello",
     seed: "empty",
-    expect: { steps: ["chat"] },
+    expect: { steps: ["chat"], answer: { matches: /AsOf/ } },
   },
   {
     id: "recall-keyword-filter",
@@ -193,7 +210,7 @@ export const CASES: EvalCase[] = [
     note: "keyword supplied by hand; extraction is a model job that is not built",
     expect: {
       steps: ["recall"],
-      answer: { found: true, contains: ["managed Postgres"] },
+      answer: { contains: ["managed Postgres"] },
     },
   },
 ];

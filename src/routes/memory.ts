@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { memoryStats } from "../conversations/repository.js";
 import type { Db } from "../db/index.js";
 import { answerRecall } from "../memory/recall.js";
-import { isValidTimeZone } from "../time/resolve.js";
+import { requestTimezone } from "./timezone.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -20,22 +20,6 @@ async function readJson(c: Context): Promise<JsonObject | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * The browser owns the timezone (review item 21). The conversation default is
- * only a fallback, so "yesterday" means the user's yesterday.
- */
-export function requestTimezone(c: Context, fallback: string): string | null {
-  const header = c.req.header("x-timezone");
-  if (header !== undefined && header.trim().length > 0) {
-    return isValidTimeZone(header.trim()) ? header.trim() : null;
-  }
-  const query = c.req.query("timezone");
-  if (query !== undefined && query.trim().length > 0) {
-    return isValidTimeZone(query.trim()) ? query.trim() : null;
-  }
-  return fallback;
 }
 
 export function memoryRoutes(db: Db, options: MemoryRouteOptions = {}) {

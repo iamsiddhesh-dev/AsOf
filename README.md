@@ -35,6 +35,7 @@ POST /api/conversations/:id/turns
 GET  /api/conversations/:id/turns
 GET  /api/conversations/:id/turns?date=3%20november
 POST /api/conversations/:id/route
+POST /api/conversations/:id/ask
 
 POST /api/memory/recall
 GET  /api/memory/stats
@@ -87,6 +88,45 @@ Claims are counted across the whole ledger, not one conversation, for the same r
 
 Date resolution is not hardcoded. `yesterday` is computed from the current time in the conversation's timezone, so on 15 November 2026 in `Asia/Kolkata` it resolves to the local day of 14 November. The browser can override the timezone per request with an `x-timezone` header.
 
+## Answer path
+
+`POST /:id/ask` routes the question, executes the plan in order, and writes both the question and the answer to the ledger. The route decides; the executor only does what it was told, so a half-answered compound question reports one status per step instead of hiding behind a single paragraph.
+
+| Step | What actually runs |
+|---|---|
+| `recall` | a SQLite read, never a model call, listing the turns and naming the date range used |
+| `search` | one Tavily search, then one synthesis call with five numbered sources |
+| `chat` | a fixed reply; no provider call |
+| `recheck` | reports `not_built`: claim extraction does not exist yet |
+
+A search answer is only marked `grounded: true` when the reply cites an `[sN]` id that matches a source returned by that search. A model that answers without citing, or cites `[s9]` out of nowhere, produces `grounded: false` — the answer is returned with its citations and a visible flag, not silently trusted. This is what caught `gpt-oss-120b` swapping `[s1]` for `【s1】`.
+
+Search results are cached in `search_cache` for 15 minutes, keyed by provider, query, and count. A recheck step carries `bypassCache` and refetches. Generated answers store the model, latency, and token counts on the assistant turn.
+
+No key? The endpoint returns `503` naming what is missing, rather than failing halfway through a turn.
+
+One real question end to end, spending one search credit and one model request:
+
+```bash
+npm run smoke:answer
+```
+
+```text
+http      200  (3054 ms wall)
+model     openai/gpt-oss-20b
+grounded  true
+steps     search:done
+
+HubSpot's own pricing page lists the Starter plan at $7 per seat per month when
+billed annually, or $10 per seat per month if paid month‑to‑month [s1][s4][s5].
+Other recent guides report $15 per month per user [s2][s3]. ...
+
+  [s1] HubSpot's Starter Plan — https://www.hubspot.com/products/crm/starter
+  ...
+
+ledger    2 turn(s): user, assistant
+```
+
 ## What works today
 
 - Persistence, migrations, FTS5, health and ledger stats.
@@ -94,12 +134,15 @@ Date resolution is not hardcoded. `yesterday` is computed from the current time 
 - Exact-date recall and global memory recall, both read from SQLite.
 - Demo history loading.
 - `.env` loading with real environment variables taking precedence, plus `npm run doctor` and `npm run probe:models`.
+- A search answer with real sources, strict citation checks, a `grounded` flag, and both turns written to the ledger.
+- Deterministic eval coverage of the answer path through injected fixtures.
 
 ## What does not work yet
 
-- No model and no search provider are called by the app yet. The provider, key, and model are configured and verified by `npm run doctor`, but no request flows through them. `search` and `recheck` steps are decided, not executed.
-- No claims are extracted, so `recheck` has nothing to diff and no receipts to show.
-- No streaming, no UI.
+- `recheck` is planned but not executed: no claims are extracted, so there is nothing to diff. It returns `not_built` rather than guessing "nothing changed".
+- No entity-set population, so "any of them" usually asks for the referent first.
+- No streaming and no UI. Answers arrive as one JSON body.
+- Search results become claims only after claim extraction exists; today the citations live on the answer, not in `sources` rows.
 
 The README says this because an agent that overstates its own state is the failure mode this project exists to avoid.
 
@@ -112,14 +155,16 @@ npm run eval
 Twelve cases run against a fresh ledger on a faked clock, in a temporary database. Each case seeds history, asks the question in a **new conversation**, and checks two things separately:
 
 - **plan** — did the router produce the right steps, mode, date range, and blocked reason?
-- **answer** — did the reply contain the right turns, or the right honest refusal?
+- **answer** — did the real `/ask` endpoint return the right text, citations, and honest refusal?
 
 ```text
 plan    12/12
-answer  5/5   (7 case(s) plan-only)
+answer  9/9   (3 case(s) plan-only)
 ```
 
-A plan failure exits non-zero, because routing regressions are silent otherwise. `plan-only` cases are the lanes whose answer path is not built: `recheck` and `search`. The harness prints them instead of skipping them, so the gap is visible rather than averaged away.
+The answer cases go through the same handler as production. Search and chat are injected with fixtures, so the harness scores plumbing — citation validation, persistence, refusals — deterministically, with no network and no keys. A fixture does not prove a model is any good; `probe:models` measures that, and `smoke:answer` proves the real pair works once.
+
+A plan failure exits non-zero, because routing regressions are silent otherwise. The three `plan-only` cases are the ones that contain a `recheck` step, which is planned but not executed. They are printed, not skipped, so the gap stays visible instead of being averaged into a number that looks fine.
 
 The eval seeds every question in a new conversation on purpose. If recall or recheck were scoped to the current conversation, these cases would fail.
 

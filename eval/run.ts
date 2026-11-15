@@ -11,6 +11,7 @@ import { emptyConversationState } from "../src/conversations/state.js";
 import { openDatabase, type Db } from "../src/db/index.js";
 import { migrate } from "../src/db/migrate.js";
 import { CASES, type EvalCase } from "./cases.js";
+import { FakeChat, FakeSearch } from "../test/support/fakes.js";
 
 const NOW = new Date(process.env.EVAL_NOW ?? "2026-11-15T10:00:00.000Z");
 const TIMEZONE = process.env.EVAL_TIMEZONE ?? "Asia/Kolkata";
@@ -30,11 +31,12 @@ type Decision = {
   timeRange: { label: string } | null;
 };
 
-type RecallBody = {
-  found: boolean;
-  message: string;
-  turns: Array<{ content: string }>;
+type AskBody = {
+  answer: string;
+  citations: Array<{ id: string; url: string }>;
+  grounded: boolean | null;
   demo: boolean;
+  steps: Array<{ action: string; status: string }>;
 };
 
 function seedTurns(db: Db, history: Conversation, testCase: EvalCase): void {
@@ -184,36 +186,48 @@ function checkPlan(decision: Decision, testCase: EvalCase): Outcome {
   return { ok: true, detail: actualSteps || "clarify" };
 }
 
-function checkAnswer(body: RecallBody, testCase: EvalCase): Outcome {
+function checkAnswer(body: AskBody, testCase: EvalCase): Outcome {
   const expected = testCase.expect.answer;
   if (expected === undefined) {
     return { ok: false, detail: "no expectation" };
-  }
-
-  if (body.found !== expected.found) {
-    return { ok: false, detail: `found ${body.found} != ${expected.found}` };
   }
 
   if (expected.demo !== undefined && body.demo !== expected.demo) {
     return { ok: false, detail: `demo ${body.demo} != ${expected.demo}` };
   }
 
-  if (expected.message !== undefined && !expected.message.test(body.message)) {
-    return { ok: false, detail: `message did not match ${expected.message}` };
+  if (expected.grounded !== undefined && body.grounded !== expected.grounded) {
+    return {
+      ok: false,
+      detail: `grounded ${body.grounded} != ${expected.grounded}`,
+    };
   }
 
-  const haystack = body.turns
-    .map((turn) => turn.content)
-    .join("\n")
-    .toLowerCase();
+  if (
+    expected.minCitations !== undefined &&
+    body.citations.length < expected.minCitations
+  ) {
+    return {
+      ok: false,
+      detail: `${body.citations.length} citation(s) < ${expected.minCitations}`,
+    };
+  }
 
+  if (expected.matches !== undefined && !expected.matches.test(body.answer)) {
+    return { ok: false, detail: `answer did not match ${expected.matches}` };
+  }
+
+  const haystack = body.answer.toLowerCase();
   for (const needle of expected.contains ?? []) {
     if (!haystack.includes(needle.toLowerCase())) {
       return { ok: false, detail: `missing "${needle}"` };
     }
   }
 
-  return { ok: true, detail: `${body.turns.length} turn(s)` };
+  return {
+    ok: true,
+    detail: `${body.answer.length} chars, ${body.citations.length} citation(s)`,
+  };
 }
 
 async function runCase(testCase: EvalCase): Promise<Row> {
@@ -222,7 +236,12 @@ async function runCase(testCase: EvalCase): Promise<Row> {
 
   try {
     migrate(db);
-    const app = createApp(db, { clock: () => NOW });
+    const app = createApp(db, {
+      clock: () => NOW,
+      search: new FakeSearch(),
+      chat: new FakeChat(),
+      model: "fixture-model",
+    });
     const anchor = await prepare(db, app, testCase);
 
     const routeResponse = await app.request(
@@ -237,8 +256,8 @@ async function runCase(testCase: EvalCase): Promise<Row> {
 
     let answer: Outcome | null = null;
     if (testCase.expect.answer !== undefined) {
-      const recallResponse = await app.request(
-        "http://localhost/api/memory/recall",
+      const askResponse = await app.request(
+        `http://localhost/api/conversations/${anchor.id}/ask`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -248,7 +267,7 @@ async function runCase(testCase: EvalCase): Promise<Row> {
           }),
         },
       );
-      answer = checkAnswer((await recallResponse.json()) as RecallBody, testCase);
+      answer = checkAnswer((await askResponse.json()) as AskBody, testCase);
     }
 
     return { id: testCase.id, plan, answer, note: testCase.note };
