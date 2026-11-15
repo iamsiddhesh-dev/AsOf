@@ -35,6 +35,9 @@ export type Turn = {
   claimsStatus: string;
   traceId: string | null;
   parentTurnId: string | null;
+  isDemo: boolean;
+  /** Only present on global memory reads, where turns span conversations. */
+  conversationTitle?: string;
 };
 
 type ConversationRow = {
@@ -64,6 +67,8 @@ type TurnRow = {
   claims_status: string;
   trace_id: string | null;
   parent_turn_id: string | null;
+  is_demo: number;
+  conversation_title?: string;
 };
 
 function mapConversation(row: ConversationRow): Conversation {
@@ -78,7 +83,7 @@ function mapConversation(row: ConversationRow): Conversation {
 }
 
 function mapTurn(row: TurnRow): Turn {
-  return {
+  const turn: Turn = {
     id: row.id,
     conversationId: row.conversation_id,
     role: row.role,
@@ -96,7 +101,14 @@ function mapTurn(row: TurnRow): Turn {
     claimsStatus: row.claims_status,
     traceId: row.trace_id,
     parentTurnId: row.parent_turn_id,
+    isDemo: row.is_demo === 1,
   };
+
+  if (row.conversation_title !== undefined) {
+    turn.conversationTitle = row.conversation_title;
+  }
+
+  return turn;
 }
 
 export function createConversation(
@@ -161,6 +173,7 @@ export type AppendTurnInput = {
   resolvedLabel?: string | null;
   intent?: string | null;
   model?: string | null;
+  isDemo?: boolean;
 };
 
 export function appendTurn(db: Db, input: AppendTurnInput): Turn {
@@ -198,8 +211,8 @@ export function appendTurn(db: Db, input: AppendTurnInput): Turn {
       `INSERT INTO turns
         (id, conversation_id, role, content, created_at, model,
          resolved_start, resolved_end, resolved_label, intent, status,
-         claims_status, parent_turn_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 'pending', ?)`,
+         claims_status, parent_turn_id, is_demo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', 'pending', ?, ?)`,
     ).run(
       id,
       input.conversationId,
@@ -212,6 +225,7 @@ export function appendTurn(db: Db, input: AppendTurnInput): Turn {
       input.resolvedLabel ?? null,
       input.intent ?? null,
       input.parentTurnId ?? null,
+      input.isDemo === true ? 1 : 0,
     );
 
     db.prepare(
@@ -265,4 +279,104 @@ export function recallTurns(
     )
     .all(conversationId, range.start, range.end, limit) as TurnRow[];
   return rows.map(mapTurn);
+}
+
+export type GlobalRecallOptions = {
+  keyword?: string | null;
+  limit?: number;
+};
+
+function toFtsQuery(keyword: string): string | null {
+  const terms = keyword
+    .toLowerCase()
+    .split(/\s+/)
+    .map((term) => term.replace(/[^a-z0-9]/g, ""))
+    .filter((term) => term.length > 1);
+  if (terms.length === 0) {
+    return null;
+  }
+  return terms.map((term) => `"${term}"`).join(" AND ");
+}
+
+/**
+ * Memory is not scoped to one conversation: "what did I ask in November" has to
+ * reach every conversation the user has ever had.
+ */
+export function recallTurnsEverywhere(
+  db: Db,
+  range: { start: string; end: string },
+  options: GlobalRecallOptions = {},
+): Turn[] {
+  const limit = options.limit ?? 200;
+  const keyword = options.keyword?.trim() ?? "";
+  const ftsQuery = keyword.length > 0 ? toFtsQuery(keyword) : null;
+
+  const filter = ftsQuery === null ? "" : "AND t.rowid IN (SELECT rowid FROM turns_fts WHERE turns_fts MATCH ?)";
+  const params: unknown[] =
+    ftsQuery === null
+      ? [range.start, range.end, limit]
+      : [range.start, range.end, ftsQuery, limit];
+
+  const rows = db
+    .prepare(
+      `SELECT t.*, c.title AS conversation_title
+       FROM turns t
+       JOIN conversations c ON c.id = t.conversation_id
+       WHERE t.created_at >= ?
+         AND t.created_at < ?
+         ${filter}
+       ORDER BY t.created_at ASC, t.rowid ASC
+       LIMIT ?`,
+    )
+    .all(...params) as TurnRow[];
+  return rows.map(mapTurn);
+}
+
+/** The most recent turns across every conversation, newest last. */
+export function recentTurnsEverywhere(db: Db, limit = 20): Turn[] {
+  const rows = db
+    .prepare(
+      `SELECT t.*, c.title AS conversation_title
+       FROM turns t
+       JOIN conversations c ON c.id = t.conversation_id
+       ORDER BY t.created_at DESC, t.rowid DESC
+       LIMIT ?`,
+    )
+    .all(limit) as TurnRow[];
+  return rows.reverse().map(mapTurn);
+}
+
+export type MemoryStats = {
+  turns: number;
+  conversations: number;
+  demoConversations: number;
+  firstTurnAt: string | null;
+  lastTurnAt: string | null;
+};
+
+export function memoryStats(db: Db): MemoryStats {
+  const turns = db
+    .prepare(
+      `SELECT COUNT(*) AS count, MIN(created_at) AS first, MAX(created_at) AS last
+       FROM turns`,
+    )
+    .get() as { count: number; first: string | null; last: string | null };
+
+  const conversations = db
+    .prepare("SELECT COUNT(*) AS count FROM conversations")
+    .get() as { count: number };
+
+  const demo = db
+    .prepare(
+      "SELECT COUNT(DISTINCT conversation_id) AS count FROM turns WHERE is_demo = 1",
+    )
+    .get() as { count: number };
+
+  return {
+    turns: turns.count,
+    conversations: conversations.count,
+    demoConversations: demo.count,
+    firstTurnAt: turns.first,
+    lastTurnAt: turns.last,
+  };
 }

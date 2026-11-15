@@ -6,7 +6,13 @@ import { migrate } from "./db/migrate.js";
 
 const db = openDatabase(config.databasePath);
 const applied = migrate(db);
-const app = createApp(db);
+
+const clock =
+  config.fakeNow === null
+    ? () => new Date()
+    : () => new Date(config.fakeNow as string);
+
+const app = createApp(db, { clock });
 
 const server = serve(
   {
@@ -16,6 +22,9 @@ const server = serve(
   (info) => {
     console.log(`asof listening on http://localhost:${info.port}`);
     console.log(`database: ${config.databasePath}`);
+    if (config.fakeNow !== null) {
+      console.log(`clock:    faked at ${config.fakeNow}`);
+    }
     if (applied.length > 0) {
       console.log(`applied migrations: ${applied.join(", ")}`);
     }

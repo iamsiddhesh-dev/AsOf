@@ -65,6 +65,29 @@ export function hasTemporalReference(input: string): boolean {
   return TEMPORAL_CUE_PATTERN.test(input);
 }
 
+/** Day of week in the conversation timezone, 0 = Sunday. */
+export function localWeekday(date: Date, timeZone: string): number {
+  const parts = getZonedParts(date, timeZone);
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
+}
+
+/** A specific wall-clock time on a day offset from `base`, in `timeZone`. */
+export function localDayAt(
+  base: Date,
+  timeZone: string,
+  offsetDays: number,
+  hour = 0,
+  minute = 0,
+): Date {
+  const parts = getZonedParts(base, timeZone);
+  const day = addLocalDays(
+    { year: parts.year, month: parts.month, day: parts.day },
+    offsetDays,
+  );
+  const midnight = zonedMidnightUtc(day.year, day.month, day.day, timeZone);
+  return new Date(midnight.getTime() + (hour * 60 + minute) * 60_000);
+}
+
 export type DateDirection = "past" | "future" | "nearest";
 
 export type ResolvedRange = {

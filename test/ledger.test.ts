@@ -148,7 +148,8 @@ describe("ledger foundation", () => {
       schemaVersion: number;
       counts: Record<string, number>;
     };
-    assert.equal(statsBody.schemaVersion, 1);
+    // Bump when a migration lands: this asserts migrations are actually applied.
+    assert.equal(statsBody.schemaVersion, 2);
     assert.equal(statsBody.counts.turns, 1);
     assert.equal(statsBody.counts.claims, 0);
 
