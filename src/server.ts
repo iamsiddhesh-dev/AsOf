@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
-import { config } from "./config.js";
+import { config, missingKeys } from "./config.js";
 import { openDatabase } from "./db/index.js";
 import { migrate } from "./db/migrate.js";
 
@@ -22,6 +22,10 @@ const server = serve(
   (info) => {
     console.log(`asof listening on http://localhost:${info.port}`);
     console.log(`database: ${config.databasePath}`);
+    const missing = missingKeys();
+    if (missing.length > 0) {
+      console.log(`keys:     missing ${missing.join(", ")} — run npm run doctor`);
+    }
     if (config.fakeNow !== null) {
       console.log(`clock:    faked at ${config.fakeNow}`);
     }
